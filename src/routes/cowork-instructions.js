@@ -22,7 +22,6 @@ meeting transcripts into useful notes and actions.
 
 - GET/POST/PATCH/DELETE /tasks: Nora's local scheduled and recurring task queue.
 - GET/POST/PATCH/DELETE /projects: local project context and Teamwork linkage.
-- GET /project-control/report: current project risks, milestones, decisions, and interventions.
 - GET /transcripts and GET /transcripts/:botId: completed Recall transcripts.
 - POST /meetings/join: join a meeting when explicitly requested.
 - GET /calendar/status: calendar connection state.

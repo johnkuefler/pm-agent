@@ -9,10 +9,10 @@ const html = fs.readFileSync(path.join(root, 'dashboard.html'), 'utf8');
 
 test('dashboard exposes only operational PM views', () => {
   const tabs = [...html.matchAll(/data-tab="([^"]+)"/g)].map(match => match[1]);
-  assert.deepEqual(tabs, ['projects', 'tasks', 'meeting', 'admin']);
+  assert.deepEqual(tabs, ['tasks', 'meeting', 'admin']);
   for (const tab of tabs) assert.match(html, new RegExp(`id="page-${tab}"`));
 
-  const removed = ['executive', 'fleet', 'transcripts', 'memory', 'live', 'intelligence',
+  const removed = ['projects', 'executive', 'fleet', 'transcripts', 'memory', 'live', 'intelligence',
     'dreams', 'markers', 'routine', 'charter', 'self'];
   for (const tab of removed) assert.doesNotMatch(html, new RegExp(`id="page-${tab}"`));
 
@@ -31,7 +31,6 @@ test('dashboard assets are focused, deploy-versioned, and valid JavaScript', () 
     '/assets/js/dashboard-meeting.js',
     '/assets/js/dashboard-tasks.js',
     '/assets/js/dashboard-knowledge.js',
-    '/assets/js/dashboard-portfolio.js',
     '/assets/js/dashboard-admin.js',
     '/assets/js/dashboard-init.js',
   ]);
@@ -44,9 +43,8 @@ test('dashboard assets are focused, deploy-versioned, and valid JavaScript', () 
   }
 });
 
-test('core project, task, meeting, transcript, and settings controls remain visible', () => {
+test('core task, meeting, transcript, and settings controls remain visible', () => {
   for (const id of [
-    'portfolio-overview', 'pm-control-stats', 'project-detail-info',
     'task-list', 'url', 'transcript-list', 'calendar-status', 'mcp-list',
   ]) assert.match(html, new RegExp(`id="${id}"`));
 
@@ -59,11 +57,10 @@ test('core project, task, meeting, transcript, and settings controls remain visi
   assert.doesNotMatch(meeting, /setInterval\(/);
 });
 
-test('dashboard retains responsive mobile and portfolio layouts', () => {
+test('dashboard retains its responsive mobile layout', () => {
   const css = fs.readFileSync(path.join(root, 'public/dashboard.css'), 'utf8');
   assert.match(html, /<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">/);
   assert.match(css, /@media\(max-width:600px\)/);
   assert.match(css, /env\(safe-area-inset-bottom\)/);
-  assert.match(css, /\.portfolio-project-card\{[^}]*display:grid/);
-  assert.match(css, /@media\(max-width:760px\)/);
+  assert.doesNotMatch(css, /portfolio-/);
 });

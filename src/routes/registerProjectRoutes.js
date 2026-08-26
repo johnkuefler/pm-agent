@@ -7,7 +7,7 @@ const axios = require('axios');
 // The client field carries a Teamwork-style code suffix, so every internal project reads
 // "LimeLight Marketing (LL)". The previous check compared for exact equality against
 // "limelight marketing", which that value never matches, so all fifteen internal projects sailed
-// through the exclusion. They also score as the thinnest projects in the portfolio, because nobody
+// through the exclusion. They also score as the thinnest projects in coverage reports, because nobody
 // writes client research about internal billing buckets, which put them at the very top of the
 // "most in need first" sort and handed the idle-research loop the same dead ends every run.
 //

@@ -249,13 +249,19 @@
         }
         const connectedAt = d.connected_at ? new Date(d.connected_at).toLocaleString() : 'unknown';
         const lastSync = d.last_sync ? new Date(d.last_sync).toLocaleString() : 'never';
+        const schedulingStatus = d.scheduling_enabled
+          ? 'Real-time scheduling enabled'
+          : 'Reconnect required to enable real-time scheduling';
+        const reconnectButton = d.scheduling_enabled ? ''
+          : '<button class="btn btn-primary" onclick="connectCalendar()">Reconnect</button>';
         el.innerHTML = `
           <div class="memory-item">
             <div style="flex: 1;">
               <div class="memory-fact">${escHtml(d.google_email)}</div>
-              <div class="memory-meta">Connected ${escHtml(connectedAt)} · Last sync ${escHtml(lastSync)}</div>
+              <div class="memory-meta">${escHtml(schedulingStatus)} · Connected ${escHtml(connectedAt)} · Last sync ${escHtml(lastSync)}</div>
             </div>
             <div style="display: flex; gap: 6px; flex-shrink: 0;">
+              ${reconnectButton}
               <button class="btn btn-danger" onclick="disconnectCalendar()">Disconnect</button>
             </div>
           </div>`;
@@ -382,8 +388,6 @@
           s.textContent = `${verb} ${d.created}, promoted ${d.promoted}, ${d.unchanged} unchanged · scanned ${d.after_filter} of ${d.teamwork_total} TW projects (${d.pages_fetched} page${d.pages_fetched === 1 ? '' : 's'})`;
           out.textContent = JSON.stringify(d, null, 2);
           out.style.display = 'block';
-          // Refresh projects tab data if user clicks back
-          if (typeof loadProjects === 'function') loadProjects();
         } else {
           s.className = 'toast err'; s.textContent = d.error || 'Sync failed';
           out.textContent = JSON.stringify(d, null, 2);

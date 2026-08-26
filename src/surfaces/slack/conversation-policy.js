@@ -21,7 +21,7 @@ function slackEmptyReplyFallback(text, conversationPolicy, {
 } = {}) {
   if (sentSlack) return 'Sent.';
   if (queuedSelf) return 'Queued for myself.';
-  if (wroteLive) return "Done, that's updated in Teamwork.";
+  if (wroteLive) return 'Done, the requested change is verified.';
 
   const normalized = String(text || '').trim().toLowerCase().replace(/\s+/g, ' ');
   if (conversationPolicy?.lightweightSocial) {
@@ -156,24 +156,6 @@ function isObviouslyNotForNora(text, botUserId) {
   return false;
 }
 
-function proactiveSlackReplyShouldBeSilent(value) {
-  const reply = String(value || '').trim().replace(/[\u2018\u2019]/g, "'");
-  if (!reply || slackReplyRequestsSilence(reply)) return true;
-  // An unsolicited negative search result is not a useful interruption. It is also impossible to
-  // prove exhaustively from a bounded tool turn. Nora may interject with a verified positive fact,
-  // but uncertainty, absence claims, and referrals stay private until someone asks her directly.
-  return [
-    /\bi (?:do not|don't) have\b.{0,140}\b(?:grounded|specific|verified|concrete|fact|answer|context)\b/i,
-    /\bi (?:could not|couldn't|cannot|can't) (?:find|verify|confirm|reach|locate|tell)\b/i,
-    /\bi (?:do not|don't) have enough\b/i,
-    /\b(?:is not|isn't|are not|aren't|was not|wasn't|were not|weren't) (?:tracked|listed|recorded|in teamwork|there)\b/i,
-    /\b(?:does not|doesn't|did not|didn't) (?:show up|turn up|surface)\b/i,
-    /\b(?:nothing|not much) (?:to add|to put on the table|useful to add)\b/i,
-    /\b(?:worth|you should|i would) (?:ping|ask|check with)\b/i,
-    /\b(?:whoever|the person|the team) (?:owns|handled|made)\b.{0,100}\b(?:would|should) know\b/i,
-  ].some(pattern => pattern.test(reply));
-}
-
 function slackDeliverySegments(value, { boundedConversation = false } = {}) {
   const parts = String(value || '').split(/\n?\s*<split>\s*\n?/i)
     .map(segment => segment.trim()).filter(Boolean).slice(0, 3);
@@ -208,7 +190,6 @@ module.exports = {
   slackSessionKey,
   stripSlackLookupNarration,
   slackReplyRequestsSilence,
-  proactiveSlackReplyShouldBeSilent,
   slackDeliverySegments,
   slackThreadHasNoraReply,
 };

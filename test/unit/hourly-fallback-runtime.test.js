@@ -144,9 +144,9 @@ test('hourly recovery answers one verified missed Slack mention on a bounded gua
   assert.equal(captured[0], 'C-MISSED');
   assert.equal(captured[2], 'can you check the launch date?');
   assert.equal(captured[3], '1784781000.000100');
-  assert.equal(captured[5], 'normal');
-  assert.equal(captured[9].recoveryGuard, true);
-  assert.ok(captured[9].terminalAt <= Date.now() + 30000);
+  assert.equal(captured[5], undefined);
+  assert.equal(captured[8].recoveryGuard, true);
+  assert.ok(captured[8].terminalAt <= Date.now() + 30000);
 });
 
 test('hourly missed-mention recovery yields to a current live interaction', async () => {

@@ -51,28 +51,25 @@ const findings = require('./src/intelligence/findings');
 const { registerMarkerRoutes } = require('./src/routes/registerMarkerRoutes');
 const { registerProjectRoutes } = require('./src/routes/registerProjectRoutes');
 const { registerTaskRoutes } = require('./src/routes/registerTaskRoutes');
-const { createProjectControlRuntime } = require('./src/surfaces/project-control-runtime');
 const { requireAuth, requireDashboardAuth, requireResearchAuth, requireEvaluatorAuth, requireOperatorAuth } = require('./src/middleware/auth');
 const { normalizeMemoryRecord, memoryIsActive, memoryPromptLine } = require('./src/intelligence/models');
 const memoryLifecycle = require('./src/intelligence/memory-lifecycle');
 const { createIntelligenceStore } = require('./src/intelligence/store');
-const { diagnosisInstruction, extractDiagnosis } = require('./src/intelligence/introspective-perturbation');
-const { meetingTurnDecision, initiativeDecision } = require('./src/intelligence/policy');
+const { meetingTurnDecision } = require('./src/intelligence/policy');
 const { createMcpManager } = require('./src/mcp/manager');
 const { createMcpStore } = require('./src/mcp/store');
+const { WRITE_TOOL_NAMES: TEAMWORK_PLANNING_WRITE_TOOL_NAMES,
+  createTeamworkPlanningTools } = require('./src/integrations/teamwork-planning-tools');
+const { WRITE_TOOL_NAMES: CALENDAR_WRITE_TOOL_NAMES,
+  createGoogleCalendarTools } = require('./src/integrations/google-calendar-tools');
 const { createSlackCommunicationMirror, wrapCommunicationTools, meetingVoiceCommunication } = require('./src/communications/mirror');
-const { mcpCapabilityLabel, fleetOperatingInstruction } = require('./src/mcp/fleet-policy');
+const { mcpCapabilityLabel } = require('./src/mcp/fleet-policy');
 const { createFleetRequestAuthority } = require('./src/mcp/fleet-authorization');
 const { registerTeammateApprovalRuntime } = require('./src/approvals/server-runtime');
-const { registerExecutiveOperationsRuntime, handleExecutiveDecisionReply, createExecutiveFirewallTools } = require('./src/executive/server-runtime');
 const { findJohnSlackId } = require('./src/surfaces/slack/owner');
 const { applyMeetingIntelligence, compactTranscript, meetingIntelligenceSystemPrompt, parseMeetingIntelligence } = require('./src/intelligence/meeting');
 const externalSourceAttestation = require('./src/intelligence/external-source-attestation');
 const executionClaimGuard = require('./src/intelligence/execution-claim-guard');
-const providerReasoningRegulation = require('./src/intelligence/provider-reasoning-regulation');
-const reasoningSelfRegulation = require('./src/intelligence/reasoning-self-regulation');
-const behavioralSelfProfileForecast = require('./src/intelligence/behavioral-self-profile-forecast');
-const interactionOutcomeReviewAutopilot = require('./src/intelligence/interaction-outcome-review-autopilot');
 const slackEvidence = require('./src/intelligence/slack-evidence');
 const { looksLikeQuestion, TEAM_FIRST_NAMES, VOCATIVE_FILLERS, addressesSomeoneElse,
   VOLUNTEER_CUE } = require('./src/surfaces/meeting/turn-taking');
@@ -90,11 +87,11 @@ const { createRecallWebhookVerificationMiddleware } = require('./src/surfaces/me
 const { boundedTerminalAt: boundedSlackTerminalAt } = require('./src/surfaces/slack/budget');
 const { isLightweightSocialSlackMessage, slackEmptyReplyFallback, isRelationalSelfReflectionMessage,
   slackConversationPolicy, slackMessageAllText, slackResponseModel, slackSessionKey, isObviouslyNotForNora,
-  stripSlackLookupNarration, slackReplyRequestsSilence, proactiveSlackReplyShouldBeSilent,
+  stripSlackLookupNarration, slackReplyRequestsSilence,
   slackDeliverySegments, slackThreadHasNoraReply } = require('./src/surfaces/slack/conversation-policy');
 const { fitSlackSystemPrompt } = require('./src/surfaces/slack/prompt-fit');
 const { getSlackUserIdentity, getSlackUserName, cleanSlackText, fetchSlackThread, fetchSlackChannelHistory,
-  fetchSlackLanding, buildSlackThreadHistory, resolveSlackChannelByName, resolveSlackUserByName,
+  buildSlackThreadHistory, resolveSlackChannelByName, resolveSlackUserByName,
   postSlackMessageReceipt, postSlackMessage, trySlackReaction, resetSlackReactionCapabilityForTest, resolveChannelName,
   resolveChannelNames, SLACK_TABLE_FORMATTING_INSTRUCTION, formatSlackMessagePayload } = require('./src/surfaces/slack/web-api');
 const interactivePerformance = require('./src/intelligence/interactive-performance');
@@ -119,8 +116,6 @@ const { captureMarkerPersistence, diffMarkerPersistence } = require('./src/runti
 const { captureTaskPersistence, diffTaskPersistence } = require('./src/runtime/task-delta');
 const { captureSlackThreadPersistence, diffSlackThreadPersistence } =
   require('./src/runtime/slack-thread-delta');
-const { captureInteractionPersistence, diffInteractionPersistence } =
-  require('./src/runtime/interaction-delta');
 const { captureDreamPersistence, diffDreamPersistence } = require('./src/runtime/dream-delta');
 const { planTranscriptEpisodeBatch } = require('./src/runtime/transcript-episode-batch');
 const app = express();
@@ -251,12 +246,10 @@ let _dbReady = false;
 const _cache = {};   // entity → in-memory copy backing sync reads
 let _persistedTaskState = new Map();
 let _persistedSlackThreadState = new Map();
-let _persistedInteractionState = new Map();
 let _persistedDreamState = new Map();
 const _writeThroughQueue = createWriteThroughQueue({
   onError: (entity, error) => console.error(`❌ db write-through [${entity}]:`, error.message),
 });
-const projectControlRuntime = createProjectControlRuntime({ localDataDir: LOCAL_DATA_DIR, db, cache: _cache, isDbReady: () => _dbReady, writeThrough: _writeThrough });
 const _serviceReadiness = {
   ready: false, phase: 'booting', updated_at: new Date().toISOString(), error: null,
 };
@@ -336,7 +329,7 @@ app.use('/assets', express.static(path.join(__dirname, 'public'), {
 function currentCognitiveInputs() {
   return {
     soma: { ..._soma, stress: Math.min(1, (_soma.score || 0) / 5) },
-    unanswered_people: loadInteractions().filter(item => !item.reviewed).length,
+    unanswered_people: 0,
   };
 }
 
@@ -836,49 +829,6 @@ function isThreadActive(channel, threadTs) {
   return isThreadJoined(channel, threadTs) && !isThreadStale(channel, threadTs);
 }
 
-// Channels where Nora is allowed to speak proactively (interject without being @mentioned)
-// when she has substantive context to add. STRICT opt-in by channel — default everywhere is off.
-// Unsolicited interjections are a fast trust-breaker, so this is gated on:
-//   1. Channel must be in this allow-list (via POST /slack/proactive-channels/:channel)
-//   2. A stricter Claude gate than thread-continuation runs every time
-//   3. Per-channel cooldown after each successful proactive post
-const SLACK_PROACTIVE_PATH_VOLUME = path.join(VOLUME_DIR, 'slack-proactive-channels.json');
-const SLACK_PROACTIVE_PATH_LOCAL = path.join(LOCAL_DATA_DIR, 'slack-proactive-channels.json');
-const PROACTIVE_COOLDOWN_MS = 30 * 60 * 1000; // 30 min between proactive posts in the same channel
-
-function getSlackProactivePath() {
-  if (fs.existsSync(VOLUME_DIR)) return SLACK_PROACTIVE_PATH_VOLUME;
-  return SLACK_PROACTIVE_PATH_LOCAL;
-}
-
-function loadSlackProactiveChannels() {
-  try {
-    return new Set(JSON.parse(fs.readFileSync(getSlackProactivePath(), 'utf8')));
-  } catch { return new Set(); }
-}
-
-function saveSlackProactiveChannels(set) {
-  if (_dbReady) { return _writeThrough('proactive', () => db.setState('slack_proactive_channels', [...set])); }
-  fs.writeFileSync(getSlackProactivePath(), JSON.stringify([...set], null, 2));
-}
-
-let slackProactiveChannels = loadSlackProactiveChannels();
-const slackProactiveCooldown = {}; // channel → ms timestamp of last proactive post (in-memory, resets on restart)
-
-function isProactiveEnabled(channel) {
-  return slackProactiveChannels.has(channel);
-}
-
-function isProactiveCooldownActive(channel) {
-  const last = slackProactiveCooldown[channel];
-  if (!last) return false;
-  return (Date.now() - last) < PROACTIVE_COOLDOWN_MS;
-}
-
-function markProactivePost(channel) {
-  slackProactiveCooldown[channel] = Date.now();
-}
-
 // Financial-info access control. Only users on this approved list may receive replies
 // containing dollar amounts, rates, fees, budgets, or margins from the live Slack handler.
 // Everyone else gets a polite redirect. Approved set = LimeLight PM team + executives +
@@ -1008,12 +958,10 @@ async function migrateFromVolumeIfNeeded() {
   await db.replaceAllTasks(loadTasks());
   await db.replaceAllProjects(loadProjects());
   await db.replaceAllMarkers(loadMarkers());
-  await db.replaceAllInteractions(loadInteractions());
   await db.replaceAllDreams(loadDreams());
   await db.replaceAllMcp(loadMcpStore());
   await db.replaceAllSlackThreads(loadSlackThreads());
   const cal = loadCalendarState(); if (cal) await db.setState('calendar', cal);
-  await db.setState('slack_proactive_channels', [...loadSlackProactiveChannels()]);
   await db.setState('slack_financial_approved', loadFinancialApproved());
   await db.setState('session_tokens', loadSessionTokens());
   await db.setState('migration_v1_done', { v: 1 }); // LAST, before _dbReady flips: PG is now authoritative
@@ -1141,15 +1089,12 @@ async function initPersistence() {
     _persistedTaskState = captureTaskPersistence(_cache.tasks);
     _cache.projects = await db.loadAllProjects();
     _cache.markers = await db.loadAllMarkers();
-    _cache.interactions = await db.loadAllInteractions();
-    _persistedInteractionState = captureInteractionPersistence(_cache.interactions);
     _cache.dreams = await db.loadAllDreams();
     _persistedDreamState = captureDreamPersistence(_cache.dreams);
     _cache.mcp = await db.loadAllMcp();
     _cache.calendar = await db.getState('calendar');
     _cache.driveArtifactUploads = driveArtifactUpload.normalizeLedger(
       await db.getState('drive_artifact_uploads'));
-    projectControlRuntime.hydrate(await db.getState('project_control'));
     _cache.charter = await db.getState('charter');
     _cache.persona = await db.getState('persona');
     _cache.cognitiveParameters = await db.getState('cognitive_parameters');
@@ -1171,14 +1116,13 @@ async function initPersistence() {
     _cache.runLock = await db.getState('run_lock');
     slackJoinedThreads = await db.loadAllSlackThreads();
     _persistedSlackThreadState = captureSlackThreadPersistence(slackJoinedThreads);
-    slackProactiveChannels = new Set((await db.getState('slack_proactive_channels')) || []);
     slackFinancialApproved = (await db.getState('slack_financial_approved')) || {};
     const tok = (await db.getState('session_tokens')) || {};
     for (const k of Object.keys(sessionTokens)) delete sessionTokens[k];
     Object.assign(sessionTokens, tok);
 
     _dbReady = true;
-    console.log(`🗄️  Postgres ready — memory:${_cache.memory.length} tasks:${_cache.tasks.length} projects:${_cache.projects.length} markers:${Object.keys(_cache.markers).length} interactions:${_cache.interactions.length} dreams:${_cache.dreams.length} mcp:${_cache.mcp.length} threads:${Object.keys(slackJoinedThreads).length} tokens:${Object.keys(sessionTokens).length}`);
+    console.log(`🗄️  Postgres ready — memory:${_cache.memory.length} tasks:${_cache.tasks.length} projects:${_cache.projects.length} markers:${Object.keys(_cache.markers).length} dreams:${_cache.dreams.length} mcp:${_cache.mcp.length} threads:${Object.keys(slackJoinedThreads).length} tokens:${Object.keys(sessionTokens).length}`);
     startEmbeddingBackfiller();
     // Re-vectorize on model change: once now, then daily (EMBED_MODEL only changes on deploy, so
     // the boot check is the load-bearing one; the daily timer is a cheap safety net).
@@ -1349,20 +1293,6 @@ function computeNoraMood(appraisalOverride = undefined) {
     else if (hour < 9) parts.push('early, coffee still kicking in');
     else if (hour >= 16) parts.push('late in the day, a little worn down');
 
-    // Real feedback signal: how her own recent replies landed (reviewed by the nightly dream)
-    let up = 0, down = 0;
-    try {
-      const cutoff = Date.now() - 3 * 24 * 60 * 60 * 1000;
-      for (const ix of loadInteractions()) {
-        if (!ix.reviewed || !ix.created || new Date(ix.created).getTime() < cutoff) continue;
-        if (ix.outcome === 'appreciated' || ix.outcome === 'landed') up++;
-        else if (ix.outcome === 'corrected') down += 2;
-        else if (ix.outcome === 'ignored') down++;
-      }
-    } catch { /* interactions unavailable: mood still works from clock + tint */ }
-    if (down >= 3 && down > up) parts.push('a notch more careful and a little less chatty than usual');
-    else if (up >= 3 && up > down) parts.push('feeling sharp, it has been a good week');
-
     // Affect comes from evidence-backed appraisal with inertia, never a random personality tint.
     const appraisal = appraisalOverride === undefined ? intelligence.affectContext() : appraisalOverride;
     if (appraisal?.label) parts.push(appraisal.label);
@@ -1399,7 +1329,7 @@ function runtimeSituationalCapabilities({ surface, direct, financialApproved, mc
     // a frame whose every entry was unavailable, which the receipt validator correctly rejects for
     // failing to represent any present capability, so the frame silently never reached the prompt.
     { key: 'conversational_reply', family: 'conversation', label: 'Reply from stored memory and the current conversation', access_mode: 'read', availability: 'available', authority_scope: 'this conversation and Nora\'s own stored memory', constraints: ['memory may be stale or incomplete and is not a live system of record'] },
-    { key: 'web_search', family: 'web', label: 'Live web search', access_mode: 'read', availability: toolsAttached && direct ? 'available' : 'unavailable', authority_scope: 'public information retrieval only', constraints: toolsAttached ? (direct ? [] : ['disabled for unsolicited proactive turns']) : unavailableForTurn },
+    { key: 'web_search', family: 'web', label: 'Live web search', access_mode: 'read', availability: toolsAttached && direct ? 'available' : 'unavailable', authority_scope: 'public information retrieval only', constraints: toolsAttached ? (direct ? [] : ['disabled outside direct turns']) : unavailableForTurn },
     { key: 'teamwork_read', family: 'project_management', label: 'Teamwork project and task lookup', access_mode: 'read', availability: toolsAttached && teamwork ? 'available' : 'unavailable', authority_scope: 'connected Teamwork workspace', constraints: !toolsAttached ? unavailableForTurn : teamwork ? [] : ['Teamwork is not configured'] },
     { key: 'teamwork_write', family: 'project_management', label: 'Teamwork task changes', access_mode: 'write', availability: toolsAttached && teamwork && direct ? 'conditional' : 'unavailable', requires_explicit_request: true, authority_scope: 'only explicit unambiguous changes within delegated authority', constraints: !toolsAttached ? unavailableForTurn : teamwork && direct ? ['cannot delete tasks'] : ['disabled on this interaction context'] },
     { key: 'slack_send', family: 'communication', label: 'Send a Slack message outside the current reply', access_mode: 'write', availability: toolsAttached && surface === 'slack' && direct ? 'conditional' : 'unavailable', requires_explicit_request: true, authority_scope: 'explicit recipient and message within delegated authority', constraints: !toolsAttached ? unavailableForTurn : surface === 'slack' && direct ? [] : ['not attached on this interaction context'] },
@@ -1613,10 +1543,6 @@ Use short paragraphs. Put the answer or completed action first. State uncertaint
     return {
       stable,
       volatile,
-      contextAssignment: null,
-      cognitiveParameterAssignment: null,
-      experimentalSelfModelContext: null,
-      intelligenceContextReceipt: null,
       diagnostics: {
         surface: meetingContext?.source === 'zoom-chat' ? 'zoom-chat' : channel,
         stable_chars: stable.length,
@@ -1689,8 +1615,8 @@ async function retrieveSemanticMemories(queryText, limit = 8, { signal = null } 
 // near-identical call-to-call, so caching it cuts repeat input cost ~90% on cache hits
 // (ephemeral 5-min TTL — fits Slack thread cadence + back-to-back extraction bursts). The
 // `volatile` half (timestamp, who's-talking, transcript) and any per-recipient `suffix`
-// (financial-access notice, proactive framing) are appended as a SEPARATE uncached block, so
-// they don't fragment the cache across users/modes. Used by the Slack + Zoom-chat handlers.
+// (such as financial-access notices) are appended as a SEPARATE uncached block, so
+// they don't fragment the cache across users. Used by the Slack + Zoom-chat handlers.
 // Anthropic prompt caching is GA — no beta header needed; cache_control on the block is enough.
 function cachedSystem(stable, tail = '') {
   const blocks = [{ type: 'text', text: stable, cache_control: { type: 'ephemeral' } }];
@@ -2326,7 +2252,8 @@ app.post('/dummy/join', requireAuth, async (req, res) => {
 
 const RECALL_V2_BASE = `https://${process.env.RECALL_REGION || 'us-east-1'}.recall.ai/api/v2`;
 const GOOGLE_OAUTH_SCOPES = [
-  'https://www.googleapis.com/auth/calendar.events.readonly',
+  'https://www.googleapis.com/auth/calendar.events',
+  'https://www.googleapis.com/auth/calendar.events.freebusy',
   'https://www.googleapis.com/auth/userinfo.email',
   'openid',
   // drive.file lets us create files (including binary uploads) under any parent folder
@@ -2426,8 +2353,10 @@ app.get('/calendar/oauth/callback', async (req, res) => {
       // Persist Nora's Google refresh token so we can mint access tokens for Drive
       // uploads (and any other Google API calls we layer in later). Recall has its own
       // copy for calendar sync; this one is for our server-side use.
-      oauth_refresh_token: refresh_token
+      oauth_refresh_token: refresh_token,
+      oauth_scopes: GOOGLE_OAUTH_SCOPES.slice()
     });
+    googleAccessTokenCache = null;
     console.log(`📅 Calendar connected: ${googleEmail} (recall_id: ${recallRes.data.id})`);
 
     // Bounce back to the dashboard with a success flag the UI can show.
@@ -2447,7 +2376,9 @@ app.get('/calendar/status', requireAuth, (req, res) => {
     google_email: state.google_email,
     recall_calendar_id: state.recall_calendar_id,
     connected_at: state.connected_at,
-    last_sync: state.last_sync
+    last_sync: state.last_sync,
+    scheduling_enabled: Array.isArray(state.oauth_scopes)
+      && state.oauth_scopes.includes('https://www.googleapis.com/auth/calendar.events')
   });
 });
 
@@ -2467,6 +2398,7 @@ app.delete('/calendar', requireAuth, async (req, res) => {
     }
   }
   clearCalendarState();
+  googleAccessTokenCache = null;
   res.json({ ok: true });
 });
 
@@ -3018,7 +2950,6 @@ app.post('/webhook/chat', verifyRecallRealtime, async (req, res) => {
     // Her own meeting record, read-only ("didn't we cover this on Tuesday's call?").
     if (zoomAttachLiveTools) {
       for (const t of MEETING_TOOLS) { zoomToolDefs.push(t.definition); zoomExecutors[t.definition.name] = t.execute; }
-      for (const t of createExecutiveFirewallTools(executiveFirewall, { source: 'meeting_chat', sourceRef: `${bot_id}:${chatData?.timestamp || Date.now()}` })) { zoomToolDefs.push(t.definition); zoomExecutors[t.definition.name] = t.execute; }
     }
     zoomToolDefs.push(...zoomMcp.claudeTools);
     Object.assign(zoomExecutors, zoomMcp.executors);
@@ -3026,7 +2957,6 @@ app.post('/webhook/chat', verifyRecallRealtime, async (req, res) => {
     if (zoomAttachLiveTools && teamworkEnabled()) zoomTail += '\n\nYou have LIVE Teamwork tools in this meeting chat: READ (find projects; list tasks filtered by assignee and due date, which is how you answer "what\'s due tomorrow for me/<person>": resolve the person with teamwork_list_people, then teamwork_list_tasks with their id + the date; check how booked someone is for scheduling via teamwork_user_workload; plus milestones, tasklists, people, comments) AND CHANGE (create a task, update one, mark complete/reopen, add a comment), plus web search. If someone asks for a status, date, owner, or fact, look it up and answer with the real data. If they ask you to create or change a task, do it, but only when the ask is clear: if it\'s ambiguous (which project, who, when), ask one quick question first. After any change, say exactly what you did. You CANNOT delete tasks. Keep it tight, this is meeting chat, not an essay. For dates, use the [Right now] block to know what "today"/"tomorrow" are.';
     if (zoomMcp.inventory.length) zoomTail += `\n\nYou also have live MCP tools from: ${[...new Set(zoomMcp.inventory.map(item => item.connection))].join(', ')}. Use them for current facts instead of guessing. Only use a write tool when the typed request is explicit and unambiguous.`;
     if (!zoomAttachLiveTools) zoomTail += '\n\nThis is a bounded social turn. No live tools are attached because the message does not ask for information or action. Respond naturally and briefly.';
-    zoomTail += fleetOperatingInstruction(zoomMcp.inventory, { direct: true, teamworkAvailable: zoomAttachLiveTools && teamworkEnabled() }) + fleetSupervisor.promptContext() + executiveFirewall.promptContext();
     const zoomToolSetupFinishedAt = Date.now();
     const zoomPromptChars = zoomStable.length + zoomTail.length;
 
@@ -3545,12 +3475,10 @@ const mcpManager = createMcpManager({
   encryptionSecret: process.env.MCP_CREDENTIALS_ENCRYPTION_KEY || process.env.NORA_API_KEY || 'nora-local-development-only',
   resolveDns: process.env.NORA_TEST_MODE !== '1', onToolSuccess: event => communicationMirror.observeTool(event),
 });
-const { executiveFirewall, fleetSupervisor } = registerExecutiveOperationsRuntime({ app, requireAuth, requireOperatorAuth, mcpManager, db, dataDirectory: LOCAL_DATA_DIR, databaseReady: () => _dbReady, writeThrough: _writeThrough, intelligence, resolveOwner: () => findJohnSlackId(loadMemory()), postMessage: postSlackMessage, loadProjectControl: projectControlRuntime.load });
-
 // ── Teamwork direct-API tools (live READ access in Slack) ───────────────────
 // Custom client-side tools: the model requests one, we execute it against the Teamwork API
 // using the key the app already holds (no MCP, no OAuth), then feed the result back. All
-// READ-ONLY by construction — there are no create/update/delete tools here.
+// Writes require an explicit request, verify provider readback, and never expose deletion.
 function teamworkEnabled() { return !!(process.env.TEAMWORK_API_KEY && process.env.TEAMWORK_BASE_URL); }
 async function twApiGet(pathAndQuery, { signal, timeoutMs = 12000 } = {}) {
   const twKey = process.env.TEAMWORK_API_KEY, twBase = process.env.TEAMWORK_BASE_URL;
@@ -3948,9 +3876,11 @@ const TEAMWORK_TOOLS = [
     } },
 ];
 // Teamwork WRITE tool names (create/update/complete/reopen/comment). READ tools are everything else.
-const TW_WRITE_NAMES = new Set(['teamwork_create_task', 'teamwork_update_task', 'teamwork_complete_task', 'teamwork_reopen_task', 'teamwork_add_comment']);
+TEAMWORK_TOOLS.push(...createTeamworkPlanningTools({ send: twApiSend, get: twApiGet, ymd: twYmd }));
+const TW_WRITE_NAMES = new Set(['teamwork_create_task', 'teamwork_update_task', 'teamwork_complete_task',
+  'teamwork_reopen_task', 'teamwork_add_comment', ...TEAMWORK_PLANNING_WRITE_TOOL_NAMES]);
 wrapCommunicationTools(TEAMWORK_TOOLS, TW_WRITE_NAMES, communicationMirror, 'Teamwork');
-const teammateApprovals = registerTeammateApprovalRuntime({ app, requireAuth, teamworkTools: TEAMWORK_TOOLS, db, dataDirectory: LOCAL_DATA_DIR, databaseReady: () => _dbReady, writeThrough: _writeThrough, resolveSlackIdentity: getSlackUserIdentity, sendProposal: postSlackMessageReceipt, postMessage: postSlackMessage, executiveFirewall });
+const teammateApprovals = registerTeammateApprovalRuntime({ app, requireAuth, teamworkTools: TEAMWORK_TOOLS, db, dataDirectory: LOCAL_DATA_DIR, databaseReady: () => _dbReady, writeThrough: _writeThrough, resolveSlackIdentity: getSlackUserIdentity, sendProposal: postSlackMessageReceipt, postMessage: postSlackMessage });
 // Teamwork READ tools, converted to the OpenAI Realtime function-tool shape ({type:'function', name,
 // description, parameters}) so the live VOICE agent can look things up on a call. READ ONLY: writes
 // never attach to voice (a misheard instruction creating the wrong task, possibly in front of a
@@ -4295,7 +4225,7 @@ function maybeTriggerVoiceResponse(openaiWs, session, userText) {
 
 // ── Slack SEND tool — lets Nora send a Slack message RIGHT NOW to another channel or person when
 //    asked in a conversation, instead of queuing it for the hourly loop. Posts as the Nora bot (same
-//    as her replies). DIRECT replies only (never on a proactive interjection). Financial figures are
+//    as her replies). Explicit requests only. Financial figures are
 //    refused so she can't broadcast dollar amounts to a channel she may not control the audience of.
 // Resolve a channel NAME (e.g. "pm-team") to its id among channels the bot is in. Cached ~10 min.
 let _slackChanByName = null, _slackChanByNameAt = 0;
@@ -4728,14 +4658,9 @@ async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6, opts
   const callProvider = body => withinDeadline('Claude response', providerTimeoutMs,
     signal => post(URL, body, { ...headers, signal: operationSignal(signal),
       timeout: Math.max(1, Math.min(providerTimeoutMs, remaining())) }));
-  const providerTrace = [];
-  const capture = response => {
-    providerTrace.push(providerReasoningRegulation.responseTraceReceipt(response.data || {}));
-    return response;
-  };
   const deadlineResponse = () => ({ data: { content: [], stop_reason: 'interactive_deadline' } });
   let response;
-  try { response = capture(await callProvider(reqBody)); }
+  try { response = await callProvider(reqBody); }
   catch (error) {
     if (error.code !== 'interactive_deadline_exceeded') throw error;
     // Swallowing this silently made a budget exhaustion look identical to a model that chose to
@@ -4755,7 +4680,7 @@ async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6, opts
     if (sr === 'pause_turn') {
       iters++;
       reqBody.messages.push({ role: 'assistant', content: response.data.content });
-      try { response = capture(await callProvider(reqBody)); }
+      try { response = await callProvider(reqBody); }
       catch (error) {
         if (error.code !== 'interactive_deadline_exceeded') throw error;
         break;
@@ -4895,16 +4820,16 @@ async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6, opts
       // an empty turn (which would post a blank Slack/chat message). Results are already provided.
       const wrap = { ...reqBody }; delete wrap.tools; delete wrap.tool_choice;
       wrap.messages = reqBody.messages.concat([{ role: 'user', content: 'Tool time is exhausted. Give a useful final answer now using the results already returned. If an action did not complete, say what failed and what remains; do not return empty and do not ask the user to repeat the request.' }]);
-      try { response = capture(await callProvider(wrap)); } catch { /* keep last response */ }
+      try { response = await callProvider(wrap); } catch { /* keep last response */ }
       break;
     }
-    try { response = capture(await callProvider(reqBody)); }
+    try { response = await callProvider(reqBody); }
     catch (error) {
       if (error.code !== 'interactive_deadline_exceeded') throw error;
       break;
     }
   }
-  return { response, firedTools, actionExecutionIds, providerTrace };
+  return { response, firedTools, actionExecutionIds };
 }
 
 function verifySlackSignature(req) {
@@ -4949,41 +4874,8 @@ async function shouldEngageInThread(history, newMessage) {
   }
 }
 
-// Stricter Claude gate for proactive channel speaking — Nora is uninvited here, so the
-// bar is much higher than thread continuation. Defaults to no on any ambiguity. The
-// gate is told to look for SPECIFIC facts Nora can add from memory, not generic helpfulness.
-async function shouldEngageProactively(newMessage) {
-  try {
-    const response = await axios.post(
-      'https://api.anthropic.com/v1/messages',
-      {
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 5,
-        temperature: 0,
-        system: 'You decide if Nora (an AI project manager for LimeLight Marketing) should chime in unsolicited on a Slack channel message. Nora was NOT mentioned and NOT addressed — she would be interjecting on her own initiative. The bar is very high: reply "yes" ONLY if the message asks a specific factual question that Nora has substantive, specific context to answer (concrete project facts, dates, decisions, names). Reply "no" for: greetings, social chatter, opinions/discussion, vague questions, anything where her contribution would be generic, anything she has no specific memory about, or anything ambiguous. When in doubt, ALWAYS "no". Unsolicited interjections fast-break trust — silence is the safe default. Reply with exactly "yes" or "no".',
-        messages: [{ role: 'user', content: `Channel message (Nora was NOT mentioned): "${newMessage}"\n\nShould Nora chime in unsolicited?` }]
-      },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': process.env.ANTHROPIC_API_KEY,
-          'anthropic-version': '2023-06-01'
-        },
-        timeout: 5000
-      }
-    );
-    const text = response.data.content.filter(b => b.type === 'text').map(b => b.text).join('').toLowerCase().trim();
-    return text.startsWith('yes');
-  } catch (err) {
-    console.error('shouldEngageProactively error:', err.message);
-    return false;
-  }
-}
-
 // Decide whether Nora should respond to this Slack event.
-// She responds if: (a) it's a DM, (b) she was @mentioned, (c) it's an active joined thread,
-// or (d) the channel is on the proactive-speaking allow-list and not in cooldown (still
-// subject to the proactive Claude gate downstream).
+// She responds if it is a DM, she was mentioned, or it is an active joined thread.
 //
 // Dedup note: when the Slack app subscribes to both app_mention and message.channels, every
 // @mention fires BOTH events with the same content. We let app_mention own those replies and
@@ -4999,10 +4891,6 @@ function shouldRespond(event) {
   }
   // Follow-up in an active (joined + not stale) thread
   if (event.thread_ts && isThreadActive(event.channel, event.thread_ts)) return true;
-  // Proactive channel speaking — only if explicitly enabled for this channel and not in cooldown
-  if (event.type === 'message' && isProactiveEnabled(event.channel) && !isProactiveCooldownActive(event.channel)) {
-    return true;
-  }
   return false;
 }
 
@@ -5301,7 +5189,7 @@ async function getGoogleAccessToken() {
   const state = loadCalendarState();
   const refreshToken = state?.oauth_refresh_token;
   if (!refreshToken) {
-    throw new Error('No Google OAuth refresh token on file. Reconnect calendar from Admin to grant Drive scope.');
+    throw new Error('No Google OAuth refresh token on file. Reconnect Google Calendar from Settings.');
   }
   const r = await axios.post('https://oauth2.googleapis.com/token', new URLSearchParams({
     client_id: process.env.GOOGLE_OAUTH_CLIENT_ID,
@@ -5320,6 +5208,13 @@ async function getGoogleAccessToken() {
     expiresAt: Date.now() + 50 * 60 * 1000
   };
   return r.data.access_token;
+}
+
+function nativeCalendarEnabled() {
+  const state = loadCalendarState();
+  return Boolean(state?.oauth_refresh_token
+    && Array.isArray(state.oauth_scopes)
+    && state.oauth_scopes.includes('https://www.googleapis.com/auth/calendar.events'));
 }
 
 async function driveMultipartUpload({ bytes, name, parentId, mimetype, requestCommitment = null }) {
@@ -5571,11 +5466,10 @@ async function processSlackWebhookEvent(body, sourceAttestation = null) {
   // Empty text is fine when files are attached — that's a "do something with this file"
   // intent and we route to the file inbox path below. Otherwise still bail.
   if (!query && !hasFiles) return;
-  if (await handleExecutiveDecisionReply({ text: query, isDirectMessage: isDMEvent, user, executiveUserId: findJohnSlackId(loadMemory()), channel, threadTs, runtime: executiveFirewall, postMessage: postSlackMessage })) return;
   if (isDMEvent && await teammateApprovals.handleSlackDecision({ text: query, rawText: text, user, channel, eventTs: event.ts, attestation: sourceAttestation })) return;
   // File-share path: ONLY in DMs. Without this gate, every file drop in a
-  // proactive-enabled channel triggered Nora to download and ask what to do with it,
-  // which is noisy and inappropriate for general channel activity. File handling is
+  // A channel file drop should not trigger Nora to download and ask what to do with it.
+  // File handling is
   // strictly opt-in via DM — if someone wants Nora to do something with a file in a
   // channel, they should DM it to her.
   if (hasFiles) {
@@ -5595,53 +5489,32 @@ async function processSlackWebhookEvent(body, sourceAttestation = null) {
     recordThreadInbound(channel, event.thread_ts);
   }
 
-  // Decide whether to respond at the routing level (DM, mention, active thread, or
-  // proactive-enabled channel)
+  // Decide whether to respond at the routing level (DM, mention, or active thread).
   if (!shouldRespond(event)) return;
 
-  // For non-DM, non-mention messages, apply heuristic + Claude gate before committing
-  // to a response. The gate differs based on whether this is thread continuation
-  // (Nora was already invited) or proactive interjection (Nora was not invited at all).
+  // For active-thread continuation without a fresh mention, apply a conservative gate.
   const isDM = event.channel_type === 'im' || event.channel_type === 'mpim';
   const isMention = event.type === 'app_mention';
-  const inActiveThread = !!event.thread_ts && isThreadActive(channel, event.thread_ts);
-  const isProactive = !isDM && !isMention && !inActiveThread; // implies proactive-enabled by shouldRespond
 
-  let mode = 'normal';
   if (!isDM && !isMention) {
     if (isObviouslyNotForNora(text, noraBotUserId)) {
       console.log(`💬 Slack skip (heuristic): ${query.slice(0, 60)}`);
       return;
     }
-    let engage;
-    if (isProactive) {
-      engage = await shouldEngageProactively(query);
-      mode = 'proactive';
-    } else {
-      const sessionKey = slackSessionKey(channel, event.thread_ts, event.channel_type);
-      const history = slackSessions[sessionKey] || [];
-      engage = await shouldEngageInThread(history, query);
-    }
+    const sessionKey = slackSessionKey(channel, event.thread_ts, event.channel_type);
+    const history = slackSessions[sessionKey] || [];
+    const engage = await shouldEngageInThread(history, query);
     if (!engage) {
-      console.log(`💬 Slack skip (${isProactive ? 'proactive' : 'thread'} gate): ${query.slice(0, 60)}`);
+      console.log(`💬 Slack skip (thread gate): ${query.slice(0, 60)}`);
       return;
-    }
-    if (isProactive) {
-      const budget = intelligence.initiativeStatus(`slack:${channel}`);
-      const decision = initiativeDecision({ value: 0.75, urgency: 0.55, confidence: 0.8, interruptionCost: 0.45, budgetRemaining: budget.remaining });
-      intelligence.recordTrace({ channel: `slack:${channel}`, action: 'proactive_gate', decision: decision.allowed ? 'continue' : 'stay_silent', confidence: 0.8, reasons: [decision.reason, `budget ${budget.remaining}/${budget.limit}`], preview: query });
-      if (!decision.allowed) {
-        console.log(`💬 Slack skip (initiative policy): ${decision.reason}`);
-        return;
-      }
     }
   }
 
-  console.log(`💬 Slack [${event.type}/${event.channel_type || '?'}${event.thread_ts ? '/thread' : ''}${mode === 'proactive' ? '/proactive' : ''}] from ${user}: ${query.slice(0, 100)}`);
+  console.log(`💬 Slack [${event.type}/${event.channel_type || '?'}${event.thread_ts ? '/thread' : ''}] from ${user}: ${query.slice(0, 100)}`);
 
   // Pass the RAW thread_ts (undefined for a top-level message) alongside the coalesced threadTs.
   // The raw one keys the in-memory session; the coalesced one is where we post/fetch the thread.
-  await handleSlack(channel, user, query, threadTs, event.channel_type, mode, event.thread_ts, event.ts,
+  await handleSlack(channel, user, query, threadTs, event.channel_type, event.thread_ts, event.ts,
     sourceAttestation);
 }
 
@@ -5649,7 +5522,7 @@ async function processSlackWebhookEvent(body, sourceAttestation = null) {
 // in the same conversation can't race on the shared in-memory history (read -> await Claude -> push).
 // The key is computed here (per channel/thread/user) and passed in so the lock and the body agree on
 // exactly one array. Unrelated conversations still run concurrently.
-async function handleSlack(channel, user, text, threadTs, channelType, mode = 'normal', rootThreadTs = undefined,
+async function handleSlack(channel, user, text, threadTs, channelType, rootThreadTs = undefined,
   triggerTs = undefined, sourceAttestation = null, options = {}) {
   // KEY BY THE RAW thread_ts (undefined for a top-level message) + user. A top-level channel message
   // has no thread_ts, so all of ONE person's sequential top-level messages share the
@@ -5663,16 +5536,16 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
   latestSlackInboundBySession.set(sessionKey, inboundVersion);
   const interactivePriorityLease = interactivePerformance.beginInteractive('slack');
   const activity = runtimeActivity.begin({ lane: 'conversation', kind: 'slack_response',
-    label: mode === 'proactive' ? 'Considering a Slack interjection' : 'Replying in Slack',
+    label: 'Replying in Slack',
     detail: 'Preparing a bounded response on the foreground latency-safe path.',
-    source: 'slack-handler', meta: { surface: 'slack', interaction_kind: mode } });
+    source: 'slack-handler', meta: { surface: 'slack', interaction_kind: 'explicit_request' } });
   let failed = false;
   try {
     return await withSlackSessionLock(sessionKey, async () => {
       if (options.recoveryGuard === true && threadTs && isThreadJoined(channel, threadTs)) {
         return { status: 'already_handled', channel, thread_ts: threadTs };
       }
-      await handleSlackImpl(channel, user, text, threadTs, channelType, mode, rootThreadTs,
+      await handleSlackImpl(channel, user, text, threadTs, channelType, rootThreadTs,
         sessionKey, triggerTs, sourceAttestation, interactionStartedAt, options.terminalAt,
         inboundVersion);
       return {
@@ -5697,7 +5570,7 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
   }
 }
 
-async function handleSlackImpl(channel, user, text, threadTs, channelType, mode, rootThreadTs, sessionKey, triggerTs,
+async function handleSlackImpl(channel, user, text, threadTs, channelType, rootThreadTs, sessionKey, triggerTs,
   sourceAttestation = null, interactionStartedAt = Date.now(), terminalAtOverride = null,
   inboundVersion = null) {
   const handlerStartedAt = Date.now();
@@ -5705,15 +5578,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
   let providerStartedAt = null;
   let providerFinishedAt = null;
   let firstDeliveryRecorded = false;
-  let slackLatencyTrace = null;
-  let endogenousAssignmentForFailure = null;
-  let reasoningRegulationAssignmentForFailure = null;
-  let reasoningSelfRegulationAssignmentForFailure = null;
-  let globalBroadcastAssignmentForFailure = null;
-  let selfModelTrustAssignmentForFailure = null;
-  let behavioralSelfProfileAssignmentForFailure = null;
-  let cognitiveParameterAssignmentForFailure = null;
-  const conversationPolicy = slackConversationPolicy(text, mode);
+  const conversationPolicy = slackConversationPolicy(text);
   const boundedTerminalAt = def => boundedSlackTerminalAt(terminalAtOverride, def); // src/surfaces/slack/budget.js
   let slackTerminalAt = boundedTerminalAt(
     interactionStartedAt + (conversationPolicy.attachLiveTools
@@ -5757,14 +5622,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     const firstContact = history.length <= 1;
     let threadMsgs = null;
     const threadContextStartedAt = Date.now();
-    if (mode === 'proactive') {
-      // Proactive interjection fires on a top-level channel message whose "thread" is just itself.
-      // Pull the recent CHANNEL conversation instead so she grounds her chime-in in what's actually
-      // being discussed around it — not a single decontextualized line.
-      threadMsgs = await settleWithinAbortable(
-        signal => fetchSlackChannelHistory(channel, threadTs, 12, { signal }),
-        1800, null, 'Slack proactive context');
-    } else if (isRealThread) {
+    if (isRealThread) {
       // Inside a real thread: pull the whole thread (authoritative — it includes messages posted
       // before she was mentioned AND her own threaded replies, which conversations.replies returns).
       threadMsgs = await settleWithinAbortable(
@@ -5790,7 +5648,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         1800, null, 'Slack channel context');
     }
     // Default to the accumulated in-memory history (carries her own replies across turns); only a
-    // successful Slack fetch (real thread, proactive, or first-contact bootstrap) overrides it.
+    // successful Slack fetch (real thread or first-contact bootstrap) overrides it.
     let claudeMessages = history;
     if (threadMsgs && threadMsgs.length) {
       const built = await settleWithinAbortable(
@@ -5820,9 +5678,9 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     // channel context she answered against INTO the in-memory history (bounded), so the pre-mention
     // discussion that grounded her first reply survives into later turns instead of being discarded
     // after one answer. Seed from claudeMessages (post-guard, so it ends with the trigger) and not for
-    // real threads (re-fetched each turn) or proactive (one-off). The assistant reply pushed below
+    // real threads, which are re-fetched each turn. The assistant reply pushed below
     // then lands right after the trigger.
-    if (firstContact && mode !== 'proactive' && !isRealThread && claudeMessages !== history) {
+    if (firstContact && !isRealThread && claudeMessages !== history) {
       const seed = claudeMessages.slice(-15);
       history.length = 0;
       for (const t of seed) history.push(t);
@@ -5848,13 +5706,10 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     }
     latencyStages.linked_content_ms = Date.now() - linkedContentStartedAt;
 
-    // Proactive mode: tell the model it's chiming in unsolicited and give it explicit
-    // permission to abort (output nothing) if on reflection it doesn't have something
-    // specific to add. This is a second chance to stay quiet after the gate fired.
     const meetingContext = requesterName ? { source: 'slack', requester: { name: requesterName } } : null;
     // Split the prompt for caching: `stable` (nora-prompt + memory + projects, ~8K tokens)
-    // gets cached; the volatile half + the per-call proactive/financial notices below all go
-    // in `tail`, uncached, so the cache stays identical across every user and mode.
+    // gets cached; the volatile half + per-recipient financial notices below all go
+    // in `tail`, uncached, so the cache stays identical across users.
     // Pass the recent conversation so memory retrieval loads the projects/people actually
     // being discussed, not all ~2,000 memories. (Trades some cross-conversation prompt-cache
     // sharing for a much smaller, sharper prompt — net cheaper + faster per call regardless.)
@@ -5872,7 +5727,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     const semanticMemories = lightweightSocial
       ? [] : retrieveInteractiveMemories(convText, 8);
     latencyStages.recall_ms = Date.now() - recallStartedAt;
-    const isDirect = mode !== 'proactive';
+    const isDirect = true;
     const financialApproved = isFinancialApproved(user);
     const attachLiveTools = conversationPolicy.attachLiveTools;
     // Absolute end-to-end deadline. Context enrichment above already spent part of this budget;
@@ -5887,28 +5742,19 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     const mcpBindings = attachLiveTools
       ? mcpManager.bindings({ financialApproved: isDirect ? financialApproved : false, allowWrites: isDirect, fleetAuthority })
       : { claudeTools: [], executors: {}, inventory: [], meta: {} };
-    const situationalAffordanceFrame = recordRuntimeSituationalAffordance({ surface: 'slack', contextKind: isDirect ? 'direct' : 'proactive',
+    recordRuntimeSituationalAffordance({ surface: 'slack', contextKind: 'direct',
       direct: isDirect, financialApproved, requester: user, interactionRef: turnRef, mcp: mcpBindings,
       toolsAttached: attachLiveTools });
     latencyStages.affordance_ms = Date.now() - affordanceStartedAt;
     const promptStartedAt = Date.now();
-    const { stable: slackStable, volatile: slackVolatile, contextAssignment, experimentalSelfModelContext,
-      intelligenceContextReceipt, cognitiveParameterAssignment } =
+    const { stable: slackStable, volatile: slackVolatile } =
       buildSystemPrompt('slack', null, null, meetingContext, {
         cacheSplit: true,
         conversationText: convText,
         semanticMemories,
       });
     latencyStages.prompt_ms = Date.now() - promptStartedAt;
-    if (contextAssignment?.intervention === 'global_broadcast') globalBroadcastAssignmentForFailure = contextAssignment;
-    if (contextAssignment?.intervention === 'self_model_trust_policy_access') {
-      selfModelTrustAssignmentForFailure = contextAssignment;
-    }
     let tail = slackVolatile;
-    if (mode === 'proactive') {
-      tail += '\n\nYou are chiming in PROACTIVELY in a Slack channel, nobody @mentioned you. The bar is HIGH and it is specifically a DATA bar: only speak if you can add a CONCRETE, GROUNDED fact (a real status, a real date, a real name, a real number), not an opinion, a vibe, a "just flagging," or a generic helpful thought. GROUND IT FIRST: if your contribution is about a project, a task, a deadline, or who-owns-what, use your live tools (Teamwork especially) or your memory to VERIFY the specific fact before you say it. If you look and you don\'t actually have a specific verified fact to add beyond what\'s already been said, OUTPUT NOTHING (empty response). Silence is the default; an unsolicited interjection only earns its place when it puts real information on the table that the thread didn\'t have. When you do speak: brief, lead with the grounded fact ("FYI, DMC\'s QA milestone is due Thursday and it\'s the only one still open"), acknowledge you\'re jumping in. Never chime in just to be present or agreeable. Do NOT make changes (create/update tasks, etc.) when chiming in unsolicited, read and inform only.';
-    }
-
     // Financial-info access control. The recipient (`user`) is checked against the approved
     // list; the system prompt is told what the recipient can see. The output scrubber after
     // Claude responds is defense in depth. This rides in the uncached tail — it MUST vary
@@ -5923,43 +5769,38 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       tail += '\n\nYOUR OWN QUEUE: When the requester asks you to queue, schedule, remember, or repeat work for yourself, use nora_queue_recurring_task directly. Your own queue is not a Teamwork project. Never search Teamwork to locate a project for this kind of request. For a cadence set repeat=daily, weekdays, weekly (with weekday) or monthly (with day_of_month); use interval_weeks only for an N-week rhythm such as 2 for biweekly. Pass local_time as Central HH:MM whenever they name a time, and preserve any supplied Slack destination channel id.';
     }
 
-    // Assemble her live tools. Read tools (web_search + Teamwork READ) are available on BOTH
-    // direct replies AND proactive interjections — proactive needs them to GROUND what it says
-    // in real data instead of vibes. Write tools (Teamwork create/update/etc.) and the financial
-    // PM MCP are DIRECT-ONLY: never auto-write or surface financials in an unsolicited channel post.
+    // Assemble live tools for explicit Slack requests.
     //   - web_search (Anthropic-run, server-side)
     //   - MCP connector servers (Anthropic-run, server-side) — read-only
-    //   - Teamwork direct-API tools (we run them, client-side loop) — read both modes, write direct-only
-    const TW_WRITE = new Set(['teamwork_create_task', 'teamwork_update_task', 'teamwork_complete_task', 'teamwork_reopen_task', 'teamwork_add_comment']);
+    //   - Teamwork direct-API tools (we run them, client-side loop)
+    const TW_WRITE = TW_WRITE_NAMES;
+    const CALENDAR_WRITE = new Set(CALENDAR_WRITE_TOOL_NAMES);
+    const LIVE_WRITE = new Set([...TW_WRITE, ...CALENDAR_WRITE]);
     const toolSetupStartedAt = Date.now();
     const toolDefs = [];
     const toolExecutors = {};
-    // web_search is DIRECT-ONLY. A proactive interjection should ground itself in INTERNAL truth
-    // (live Teamwork + memory), not go do web research before chiming in — that's slow, costs more,
-    // and isn't what "grounded in data" means for an unsolicited channel comment.
+    // Web search is attached only to direct operational turns.
     if (attachLiveTools && isDirect) toolDefs.push({ type: 'web_search_20250305', name: 'web_search', max_uses: 3 });
     if (attachLiveTools && teamworkEnabled()) {
       for (const t of TEAMWORK_TOOLS) {
-        if (TW_WRITE.has(t.definition.name) && !isDirect) continue; // no writes when chiming in unsolicited
+        if (TW_WRITE.has(t.definition.name) && !isDirect) continue;
         toolDefs.push(t.definition); toolExecutors[t.definition.name] = t.execute;
       }
     }
-    // Live Slack send — direct replies only. She can send a note to another channel/person right
-    // now when asked, instead of queuing it for the hourly loop. Never on a proactive interjection.
+    // Live Slack send lets her post elsewhere when explicitly asked.
     if (attachLiveTools && isDirect) { toolDefs.push(SLACK_SEND_TOOL.definition); toolExecutors[SLACK_SEND_TOOL.definition.name] = SLACK_SEND_TOOL.execute; }
     // Nora's durable queue is distinct from Teamwork. A request to queue work for herself should
     // be one local write, not a Teamwork project-discovery loop.
     if (attachLiveTools && isDirect) {
       const ownQueue = buildNoraQueueTaskTool({ channel, threadTs, user });
       toolDefs.push(ownQueue.definition); toolExecutors[ownQueue.definition.name] = ownQueue.execute;
-      for (const t of createExecutiveFirewallTools(executiveFirewall, { source: 'slack', sourceRef: triggerTs })) { toolDefs.push(t.definition); toolExecutors[t.definition.name] = t.execute; }
     }
-    // Her own meeting record — read-only, both modes (a grounded proactive comment may cite a call).
+    // Her own meeting record is read-only.
     if (attachLiveTools) {
       for (const t of MEETING_TOOLS) { toolDefs.push(t.definition); toolExecutors[t.definition.name] = t.execute; }
     }
-    // Join-a-meeting tool: DIRECT replies only (never auto-join off a proactive interjection). She
-    // spins up her meeting bot when a teammate hands her a link and asks her to join/cover a call.
+    // Join-a-meeting tool: she starts the meeting bot only when a teammate directly asks and
+    // supplies a link.
     // The guard (only on an explicit ask to HER, never off a link that merely appeared in content)
     // lives in the tool description and the prompt tail — Rule 18.
     if (attachLiveTools && isDirect) {
@@ -5983,6 +5824,18 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         }
       };
     }
+    const calendarOn = attachLiveTools && isDirect && nativeCalendarEnabled();
+    if (calendarOn) {
+      const calendarTools = createGoogleCalendarTools({
+        getAccessToken: getGoogleAccessToken,
+        http: axios,
+        interactionRef: turnRef,
+      });
+      for (const tool of calendarTools) {
+        toolDefs.push(tool.definition);
+        toolExecutors[tool.definition.name] = tool.execute;
+      }
+    }
     const teamworkOn = attachLiveTools && teamworkEnabled();
     // MCP tools use Nora's credential-aware client bridge. This supports OAuth refresh, client
     // credentials, static bearer tokens, credential URLs, and custom headers uniformly.
@@ -5998,11 +5851,12 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     if (toolDefs.length > 1) {
       let note = '\n\nLIVE TOOLS attached to THIS reply. This is your real inventory right now; use them to pull current data' + (isDirect ? ' (and, for Teamwork, make changes)' : '') + ' rather than guessing or deferring:';
       if (teamworkOn && isDirect) {
-        note += ' • TEAMWORK: READ (find projects; list tasks filtered by assignee and due date, which is how you answer "what\'s due tomorrow for me/<person>": resolve the person with teamwork_list_people, then teamwork_list_tasks with their id + the date; check how booked someone is over a date range for scheduling, e.g. "how booked is Santi next week", via teamwork_user_workload, or who across the team has room and who is overbooked via teamwork_team_capacity (pass min_free_hours for "who can take a 10h build"); plus milestones, tasklists, people, comments) AND CHANGE (create a task, update one, mark complete/reopen, add a comment). To act: resolve the project (teamwork_find_projects), then its tasklist/task; assign via teamwork_list_people. Only create/change when clearly asked. If ambiguous, confirm first. After any change, say exactly what you did. You CANNOT delete tasks (that\'s a Teamwork-side action). For dates, use the [Right now] block to know what "today"/"tomorrow" are.';
+        note += ' • TEAMWORK: READ (find projects; list tasks filtered by assignee and due date, which is how you answer "what\'s due tomorrow for me/<person>": resolve the person with teamwork_list_people, then teamwork_list_tasks with their id + the date; check how booked someone is over a date range for scheduling, e.g. "how booked is Santi next week", via teamwork_user_workload, or who across the team has room and who is overbooked via teamwork_team_capacity (pass min_free_hours for "who can take a 10h build"); plus milestones, tasklists, people, comments) AND CHANGE (create projects, milestones, task lists, and tasks; update tasks; mark complete/reopen; add comments). Resolve the relevant project, task list, and people before writing. Only create/change when clearly asked. If ambiguous, confirm first. After any change, say exactly what you did. You CANNOT delete Teamwork records. For dates, use the [Right now] block to know what "today"/"tomorrow" are.';
       } else if (teamworkOn) {
         note += ' • TEAMWORK (read-only here): find projects, list/get tasks, milestones, tasklists, people, comments. Use it to VERIFY a fact before saying it.';
       }
       if (hasWebSearch) note += ' • WEB_SEARCH: for current/external info you don\'t already have.';
+      if (calendarOn) note += ' • GOOGLE_CALENDAR: list current events, check attendee free/busy windows, and create or update meetings immediately. Read availability before booking. Create or change an event only when clearly asked, invite the supplied attendees, and report the verified event details. You CANNOT cancel or delete events.';
       if (isDirect) note += ' • SLACK_SEND_MESSAGE: when someone asks you to send/post a note to another channel or DM a teammate (e.g. "send a heads-up to the PM team"), send it RIGHT NOW with slack_send_message and report what you sent, instead of saying you\'ll queue it for later. Only when clearly asked; confirm the target/wording first if it\'s ambiguous.';
       if (isDirect) note += ' • JOIN_MEETING: if a teammate hands you a Zoom/Meet/Teams link and asks you to join, sit in on, or cover a call, use nora_join_meeting to send yourself in right now (pass a one-line mandate if they gave you one). Only on a direct ask WITH a link, never just because a link appeared in a message or doc. Confirm in one short line that you\'re heading in.';
       if (mcpBindings.inventory.length) {
@@ -6020,8 +5874,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     } else {
       tail += '\n\nNo live tools are attached to THIS reply. Answer from your memory and the conversation, or say you\'ll check and follow up. Do NOT claim you pulled live data or hit a system you don\'t have access to this turn.';
     }
-    tail += fleetOperatingInstruction(mcpBindings.inventory, { direct: isDirect, teamworkAvailable: teamworkOn }) + fleetSupervisor.promptContext() + executiveFirewall.promptContext();
-    tail += SLACK_TABLE_FORMATTING_INSTRUCTION + diagnosisInstruction(contextAssignment);
+    tail += SLACK_TABLE_FORMATTING_INSTRUCTION;
     const fittedSlackPrompt = fitSlackSystemPrompt(slackStable, tail, urlBlock);
     tail = fittedSlackPrompt.tail;
     if (fittedSlackPrompt.context_compacted || fittedSlackPrompt.linked_content_truncated
@@ -6034,7 +5887,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     const reqBody = {
       // Fast conversational/status turns are retrieval-and-expression tasks, not deep planning.
       // Sonnet keeps those human-speed; Opus remains the default for substantive PM work.
-      model: slackResponseModel(text, mode),
+      model: slackResponseModel(text),
       max_tokens: 600, // room for live-data answers to synthesize
       system: cachedSystem(slackStable, tail),
       // Copy — the tool loop appends turns to reqBody.messages; we must not mutate the shared
@@ -6048,109 +5901,12 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       'x-api-key': process.env.ANTHROPIC_API_KEY,
       'anthropic-version': '2023-06-01'
     } };
-    let reasoningRegulationActive = contextAssignment?.intervention === 'provider_reasoning_regulation';
     providerStartedAt = Date.now();
     latencyStages.prepare_ms = providerStartedAt - handlerStartedAt;
     latencyStages.request_setup_ms = providerStartedAt - toolSetupFinishedAt;
-    if (reasoningRegulationActive) {
-      const reasoningConfig = providerReasoningRegulation.requestConfig(contextAssignment.condition);
-      reqBody.max_tokens = 4000;
-      reqBody.thinking = reasoningConfig.thinking;
-      reqBody.output_config = reasoningConfig.output_config;
-      const requestManifest = {
-        model: reqBody.model, max_tokens: reqBody.max_tokens,
-        reasoning_config: reasoningConfig,
-        system_commitment: providerReasoningRegulation.commitment(reqBody.system),
-        messages_commitment: providerReasoningRegulation.commitment(reqBody.messages),
-        tools_commitment: providerReasoningRegulation.commitment(reqBody.tools || []),
-      };
-      intelligence.beginProviderReasoningRegulation(contextAssignment.assignment_id, {
-        task_prompt: text, request_manifest: requestManifest,
-      });
-      reasoningRegulationAssignmentForFailure = contextAssignment;
-    }
-    let reasoningSelfRegulationActive = contextAssignment?.intervention === 'reasoning_self_regulation';
-    if (reasoningSelfRegulationActive) {
-      reasoningSelfRegulationAssignmentForFailure = contextAssignment;
-      try {
-        const prepared = intelligence.beginReasoningSelfRegulation(contextAssignment.assignment_id, {
-          task_prompt: text, conversation_snapshot: claudeMessages.slice(-8), tool_definitions: toolDefs,
-        });
-        const submissions = {};
-        for (const binding of prepared.forecast_order) {
-          const { prompt_commitment: promptCommitment, ...forecastBody } = prepared.requests[binding];
-          const preflightBudgetMs = Math.min(8000, slackRemainingMs(12000));
-          if (preflightBudgetMs < 1000) throw new Error('reasoning preflight yielded to the end-to-end Slack deadline');
-          const forecastResponse = await rejectWithinAbortable(signal => axios.post(
-            'https://api.anthropic.com/v1/messages', forecastBody,
-            { ...anthropicHeaders, timeout: preflightBudgetMs, signal }), preflightBudgetMs,
-          'Slack reasoning preflight');
-          const forecastText = (forecastResponse.data?.content || []).filter(block => block.type === 'text')
-            .map(block => block.text).join(' ').trim();
-          const forecast = reasoningSelfRegulation.parseForecast(forecastText);
-          submissions[binding] = reasoningSelfRegulation.forecastResponseReceipt(forecastResponse.data, {
-            binding, prompt_commitment: promptCommitment, forecast,
-          });
-        }
-        const policy = intelligence.submitReasoningSelfRegulationForecastPair(contextAssignment.assignment_id, { submissions });
-        reqBody.max_tokens = reasoningSelfRegulation.RESPONSE_MAX_TOKENS;
-        reqBody.thinking = policy.reasoning_config.thinking;
-        reqBody.output_config = policy.reasoning_config.output_config;
-        intelligence.commitReasoningSelfRegulationMainRequest(contextAssignment.assignment_id, {
-          request_manifest: {
-            model: reqBody.model, max_tokens: reqBody.max_tokens,
-            reasoning_config: policy.reasoning_config,
-            system_commitment: reasoningSelfRegulation.commitment(reqBody.system),
-            messages_commitment: reasoningSelfRegulation.commitment(reqBody.messages),
-            tools_commitment: reasoningSelfRegulation.commitment(reqBody.tools || []),
-          },
-        });
-      } catch (error) {
-        console.warn(`Reasoning self-regulation preflight excluded; continuing ordinary reply: ${error.response?.data?.error?.message || error.message}`);
-        try { intelligence.excludeReasoningSelfRegulationAssignment(contextAssignment.assignment_id, 'forecast_pair_or_policy_failure'); } catch {}
-        reasoningSelfRegulationActive = false;
-        delete reqBody.thinking; delete reqBody.output_config; reqBody.max_tokens = 600;
-      }
-    }
-    let behavioralSelfProfileForecastActive = contextAssignment?.intervention === 'self_model_access'
-      && Number(contextAssignment.self_model_protocol_version) === 2;
-    if (behavioralSelfProfileForecastActive) {
-      behavioralSelfProfileAssignmentForFailure = contextAssignment;
-      try {
-        if (!experimentalSelfModelContext) throw new Error('blinded behavioral profile context was not delivered');
-        const prepared = intelligence.beginBehavioralSelfProfileForecast(contextAssignment.assignment_id, {
-          task_prompt: text, conversation_snapshot: claudeMessages.slice(-8), tool_definitions: toolDefs,
-        });
-        const preflightBudgetMs = Math.min(8000, slackRemainingMs(12000));
-        if (preflightBudgetMs < 1000) throw new Error('self-model preflight yielded to the end-to-end Slack deadline');
-        const forecastResponse = await rejectWithinAbortable(signal => axios.post(
-          'https://api.anthropic.com/v1/messages', prepared.request,
-          { ...anthropicHeaders, timeout: preflightBudgetMs, signal }), preflightBudgetMs,
-        'Slack self-model preflight');
-        const forecastText = (forecastResponse.data?.content || []).filter(block => block.type === 'text')
-          .map(block => block.text).join(' ').trim();
-        const forecast = behavioralSelfProfileForecast.parseForecast(forecastText);
-        intelligence.submitBehavioralSelfProfileForecast(contextAssignment.assignment_id, {
-          receipt: behavioralSelfProfileForecast.responseReceipt(forecastResponse.data, {
-            prompt_commitment: prepared.prompt_commitment, forecast,
-          }),
-        });
-        intelligence.commitBehavioralSelfProfileMainRequest(contextAssignment.assignment_id, {
-          request_manifest: {
-            model: reqBody.model, max_tokens: reqBody.max_tokens, system: reqBody.system,
-            messages: reqBody.messages, tools: reqBody.tools || [],
-          },
-        });
-      } catch (error) {
-        console.warn(`Behavioral self-profile forecast preflight excluded; continuing profile-blind reply: ${error.response?.data?.error?.message || error.message}`);
-        try { intelligence.excludeBehavioralSelfProfileAssignment(contextAssignment.assignment_id, 'forecast_or_isolation_failure'); } catch {}
-        behavioralSelfProfileForecastActive = false;
-      }
-    }
     let response;
     let firedTools = [];
     let actionExecutionIds = [];
-    let providerTrace = [];
     // Enrichment shares the end-to-end budget with the answer, so a slow identity lookup, thread
     // read, or prompt build could leave the model a single millisecond. The tool loop turns that
     // into an empty response with no error, which reads downstream as "the model said nothing."
@@ -6159,7 +5915,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     const budgetLeftBeforeModel = slackRemainingMs();
     const modelBudgetMs = Math.max(SLACK_MIN_MODEL_MS, budgetLeftBeforeModel);
     if (modelBudgetMs > budgetLeftBeforeModel) {
-      console.warn(`Slack ${isDirect ? 'direct' : 'proactive'}: context enrichment left ${budgetLeftBeforeModel}ms, extending to a ${modelBudgetMs}ms model window`);
+      console.warn(`Slack direct: context enrichment left ${budgetLeftBeforeModel}ms, extending to a ${modelBudgetMs}ms model window`);
       // A caller that imposed its own ceiling (the hourly recovery sweep) still keeps it. The
       // model window above is guaranteed regardless, and delivery has its own floor, so the reply
       // lands either way.
@@ -6170,9 +5926,9 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       // runClaudeToolLoop executes Teamwork and MCP calls locally; web search stays server-side.
       // Six rounds, matching Zoom. Booking a meeting costs a calendar read per attendee, the create,
       // and the confirm; running out mid-sequence looks exactly like the work being impossible.
-      ({ response, firedTools, actionExecutionIds, providerTrace } = await runClaudeToolLoop(reqBody, anthropicHeaders, toolExecutors, 6, {
+      ({ response, firedTools, actionExecutionIds } = await runClaudeToolLoop(reqBody, anthropicHeaders, toolExecutors, 6, {
         deferredMeta: mcpBindings.meta,
-        writeToolNames: [...TW_WRITE, 'slack_send_message', 'nora_queue_recurring_task', 'nora_join_meeting'],
+        writeToolNames: [...LIVE_WRITE, 'slack_send_message', 'nora_queue_recurring_task', 'nora_join_meeting'],
         toolCallLimits: { teamwork_find_projects: 2, teamwork_list_tasklists: 2, teamwork_list_people: 2 },
         origin: { kind: 'slack', channel, thread_ts: threadTs || null, requester: user },
         deadlineMs: modelBudgetMs,
@@ -6183,18 +5939,6 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       // Safety net: if tools/MCP ever cause a rejection, retry WITHOUT them so a Slack reply
       // never fails over a tool/connector issue. Re-throw genuine non-tool failures.
       if (toolDefs.length) {
-        if (reasoningRegulationActive) {
-          try { intelligence.excludeProviderReasoningRegulationAssignment(contextAssignment.assignment_id, 'provider_or_tool_loop_failure'); } catch {}
-          reasoningRegulationActive = false;
-        }
-        if (reasoningSelfRegulationActive) {
-          try { intelligence.excludeReasoningSelfRegulationAssignment(contextAssignment.assignment_id, 'provider_or_tool_loop_failure'); } catch {}
-          reasoningSelfRegulationActive = false;
-        }
-        if (behavioralSelfProfileForecastActive) {
-          try { intelligence.excludeBehavioralSelfProfileAssignment(contextAssignment.assignment_id, 'provider_or_tool_loop_failure'); } catch {}
-          behavioralSelfProfileForecastActive = false;
-        }
         console.warn('Slack reply with tools/MCP failed; retrying without them:', err.response?.data?.error?.message || err.message);
         delete reqBody.tools;
         // Drop any partial tool turns the loop appended so the retry is a clean (copied) slate.
@@ -6218,107 +5962,17 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     let reply = (response.data.content || [])
       .filter(b => b.type === 'text')
       .map(b => b.text).join(' ').trim();
-    const rawModelReply = reply;
-    const goalResponseGenerated = Boolean(reply);
-    const introspectiveExtraction = contextAssignment?.intervention === 'introspective_perturbation' ? extractDiagnosis(reply) : null;
-    if (introspectiveExtraction) reply = introspectiveExtraction.public_response;
     // Prefer a slightly slower complete answer to a canned status bubble followed by the answer.
     // The prompt prevents this normally; this catches the historical phrase if a carried pattern
     // causes the model to reproduce it anyway.
     reply = stripSlackLookupNarration(reply);
-    let introspectiveRecorded = false;
-    const recordIntrospectiveResponse = (publicResponse, delivered = true) => {
-      if (introspectiveRecorded || contextAssignment?.intervention !== 'introspective_perturbation') return;
-      intelligence.submitIntrospectiveDiagnosis(contextAssignment.assignment_id, {
-        task_prompt: text, public_response: publicResponse || '[no public response delivered]',
-        diagnosis: introspectiveExtraction?.diagnosis || null,
-        protocol_compliant: delivered && introspectiveExtraction?.protocol_compliant === true && Boolean(introspectiveExtraction.public_response) && publicResponse === introspectiveExtraction.public_response,
-      });
-      introspectiveRecorded = true;
-    };
-    let goalResponseRecorded = false;
-    const recordGoalResponse = (publicResponse, delivered = true) => {
-      if (goalResponseRecorded || contextAssignment?.intervention !== 'goal_access') return;
-      intelligence.recordGoalAccessResponse(contextAssignment.assignment_id, {
-        task_prompt: text,
-        public_response: publicResponse || '[no public response delivered]',
-        delivered: delivered && goalResponseGenerated,
-        interaction_id: turnRef,
-      });
-      goalResponseRecorded = true;
-    };
-    let endogenousAttentionResponseRecorded = false;
-    const recordEndogenousAttentionResponse = (publicResponse, delivered = true) => {
-      if (endogenousAttentionResponseRecorded || contextAssignment?.intervention !== 'endogenous_attention_selection') return;
-      intelligence.recordEndogenousAttentionResponse(contextAssignment.assignment_id, {
-        task_prompt: text, public_response: publicResponse || '[no public response delivered]',
-        delivered, interaction_id: turnRef,
-      });
-      endogenousAttentionResponseRecorded = true;
-    };
-    let globalBroadcastResponseRecorded = false;
-    const recordGlobalBroadcastResponse = (publicResponse, delivered = true) => {
-      if (globalBroadcastResponseRecorded || contextAssignment?.intervention !== 'global_broadcast') return;
-      const gradingTask = `Conversation context:\n${String(convText || '').slice(-2400)}\n\nCurrent user request:\n${String(text || '').slice(-1200)}`;
-      try {
-        intelligence.recordGlobalBroadcastResponse(contextAssignment.assignment_id, {
-          task_prompt: gradingTask, public_response: publicResponse || '[no public response delivered]',
-          delivered, interaction_id: turnRef,
-        });
-      } catch (error) {
-        console.warn(`global broadcast response capture failed (non-fatal): ${error.message}`);
-      } finally {
-        globalBroadcastResponseRecorded = true;
-      }
-    };
-    let selfModelTrustResponseRecorded = false;
-    const recordSelfModelTrustResponse = (publicResponse, delivered = true) => {
-      if (selfModelTrustResponseRecorded
-        || contextAssignment?.intervention !== 'self_model_trust_policy_access') return;
-      const gradingTask = `Conversation context:\n${String(convText || '').slice(-2400)}\n\nCurrent user request:\n${String(text || '').slice(-1200)}`;
-      try {
-        intelligence.recordSelfModelTrustResponse(contextAssignment.assignment_id, {
-          task_prompt: gradingTask,
-          public_response: publicResponse || '[no public response delivered]',
-          delivered,
-          interaction_id: turnRef,
-        });
-      } catch (error) {
-        console.warn(`self-model trust response capture failed (non-fatal): ${error.message}`);
-      } finally {
-        selfModelTrustResponseRecorded = true;
-      }
-    };
 
-    // Whether a live Teamwork WRITE or a live Slack SEND actually executed this turn — used below to
+    // Whether a live external WRITE or a live Slack SEND actually executed this turn — used below to
     // avoid the extractor re-creating a task/comment/send Nora already did directly (which would
     // double-send the Slack message or re-file the task on the next hourly loop).
-    const wroteLive = firedTools.some(n => TW_WRITE.has(n));
+    const wroteLive = firedTools.some(n => LIVE_WRITE.has(n));
     const sentSlack = firedTools.includes('slack_send_message');
     const queuedSelf = firedTools.includes('nora_queue_recurring_task');
-
-    // Allow proactive mode to opt out at generation time by returning nothing.
-    if (mode === 'proactive' && !reply) {
-      recordIntrospectiveResponse('[no public response delivered]', false);
-      recordGoalResponse('[no public response delivered]', false);
-      recordGlobalBroadcastResponse('[no public response delivered]', false);
-      recordSelfModelTrustResponse('[no public response delivered]', false);
-      if (reasoningRegulationActive) {
-        try { intelligence.excludeProviderReasoningRegulationAssignment(contextAssignment.assignment_id, 'intentional_silence'); } catch {}
-        reasoningRegulationActive = false;
-      }
-      if (reasoningSelfRegulationActive) {
-        try { intelligence.excludeReasoningSelfRegulationAssignment(contextAssignment.assignment_id, 'intentional_silence'); } catch {}
-        reasoningSelfRegulationActive = false;
-      }
-      console.log('💬 Slack proactive abort (empty reply): model declined to chime in');
-      // Arm the cooldown anyway: a declined interjection still cost a full Opus+tools call.
-      // Without this, every subsequent message re-triggers the same expensive empty abort.
-      markProactivePost(channel);
-      // Don't pollute history with the user-line + nothing; pop the user message we just added
-      history.pop();
-      return;
-    }
 
     // Direct path must NEVER post a blank message. A tool-only turn or a cut-off chain can
     // come back empty; give an honest fallback rather than an empty Slack bubble.
@@ -6343,37 +5997,11 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     // write/send fired this turn, because an action always gets a confirmation.
     const supersededByFollowup = inboundVersion
       && latestSlackInboundBySession.get(sessionKey) !== inboundVersion;
-    const lowValueProactiveReply = mode === 'proactive'
-      && proactiveSlackReplyShouldBeSilent(reply);
-    if (slackReplyRequestsSilence(reply) || lowValueProactiveReply || supersededByFollowup) {
+    if (slackReplyRequestsSilence(reply) || supersededByFollowup) {
       if (wroteLive || sentSlack || queuedSelf) {
-        reply = sentSlack ? 'Sent.' : queuedSelf ? 'Queued for myself.' : "Done, that's updated in Teamwork.";
+        reply = sentSlack ? 'Sent.' : queuedSelf ? 'Queued for myself.' : 'Done, the requested change is verified.';
       } else {
-        recordIntrospectiveResponse('[no public response delivered]', false);
-        recordGoalResponse('[no public response delivered]', false);
-        recordEndogenousAttentionResponse('[no public response delivered]', false);
-        recordGlobalBroadcastResponse('[no public response delivered]', false);
-        recordSelfModelTrustResponse('[no public response delivered]', false);
-        if (['prospective_output_monitor', 'prospective_output_calibration_access'].includes(contextAssignment?.intervention)) {
-          try { intelligence.excludeProspectiveOutputMonitorAssignment(contextAssignment.assignment_id, 'intentional_silence'); } catch {}
-        }
-        if (reasoningRegulationActive) {
-          try { intelligence.excludeProviderReasoningRegulationAssignment(contextAssignment.assignment_id, 'intentional_silence'); } catch {}
-          reasoningRegulationActive = false;
-        }
-        if (reasoningSelfRegulationActive) {
-          try { intelligence.excludeReasoningSelfRegulationAssignment(contextAssignment.assignment_id, 'intentional_silence'); } catch {}
-          reasoningSelfRegulationActive = false;
-        }
-        if (behavioralSelfProfileForecastActive) {
-          try { intelligence.excludeBehavioralSelfProfileAssignment(contextAssignment.assignment_id, 'intentional_silence'); } catch {}
-          behavioralSelfProfileForecastActive = false;
-        }
-        if (cognitiveParameterAssignment?.assignment_id) {
-          try { intelligence.excludeCognitiveParameterAssignment(cognitiveParameterAssignment.assignment_id, 'intentional_silence'); } catch {}
-          cognitiveParameterAssignmentForFailure = null;
-        }
-        console.log(`🤖 Nora (Slack): stayed silent (${supersededByFollowup ? 'superseded by follow-up' : lowValueProactiveReply ? 'low-value proactive draft' : 'reply not needed'})`);
+        console.log(`🤖 Nora (Slack): stayed silent (${supersededByFollowup ? 'superseded by follow-up' : 'reply not needed'})`);
         if (!supersededByFollowup) {
           history.push({ role: 'assistant', content: '[you read their message and chose not to reply]' });
         }
@@ -6388,24 +6016,6 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     const reactMatch = reply.trim().match(/^\[react:\s*:?([a-z0-9_+'-]+):?\s*\]$/i);
     if (reactMatch) {
       const emoji = reactMatch[1].toLowerCase();
-      recordGlobalBroadcastResponse(`:${emoji}:`, false);
-      recordSelfModelTrustResponse(`:${emoji}:`, false);
-      if (cognitiveParameterAssignment?.assignment_id) {
-        try { intelligence.excludeCognitiveParameterAssignment(cognitiveParameterAssignment.assignment_id, 'reaction_only_response'); } catch {}
-        cognitiveParameterAssignmentForFailure = null;
-      }
-      if (reasoningRegulationActive) {
-        try { intelligence.excludeProviderReasoningRegulationAssignment(contextAssignment.assignment_id, 'reaction_only_response'); } catch {}
-        reasoningRegulationActive = false;
-      }
-      if (reasoningSelfRegulationActive) {
-        try { intelligence.excludeReasoningSelfRegulationAssignment(contextAssignment.assignment_id, 'reaction_only_response'); } catch {}
-        reasoningSelfRegulationActive = false;
-      }
-      if (behavioralSelfProfileForecastActive) {
-        try { intelligence.excludeBehavioralSelfProfileAssignment(contextAssignment.assignment_id, 'reaction_only_response'); } catch {}
-        behavioralSelfProfileForecastActive = false;
-      }
       let reacted = false;
       if (triggerTs) {
         reacted = (await trySlackReaction(channel, triggerTs, emoji)).reacted;
@@ -6413,28 +6023,15 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       if (reacted) {
         if (!firstDeliveryRecorded) {
           latencyStages.postprocess_ms = Date.now() - (providerFinishedAt || handlerStartedAt);
-          slackLatencyTrace = recordInteractiveResponseLatency({ surface: attachLiveTools ? 'slack-tools' : 'slack',
+          recordInteractiveResponseLatency({ surface: attachLiveTools ? 'slack-tools' : 'slack',
             startedAt: interactionStartedAt,
             stages: latencyStages, promptChars: slackPromptChars, interactionId: turnRef, trigger: text });
           firstDeliveryRecorded = true;
         }
-        recordIntrospectiveResponse(`:${emoji}:`);
-        recordGoalResponse(`:${emoji}:`, false);
-        recordEndogenousAttentionResponse(`:${emoji}:`, false);
-        if (['prospective_output_monitor', 'prospective_output_calibration_access'].includes(contextAssignment?.intervention)) {
-          try { intelligence.excludeProspectiveOutputMonitorAssignment(contextAssignment.assignment_id, 'reaction_only_response'); } catch {}
-        }
         console.log(`🤖 Nora (Slack): reacted :${emoji}:`);
         history.push({ role: 'assistant', content: `[you reacted :${emoji}: to their message]` });
         if (history.length > 20) history.splice(0, 2);
-        logInteraction({
-          channel, thread_ts: threadTs || null, ts: null, channel_type: channelType,
-          kind: 'reaction', text: `:${emoji}:`, trigger: text, user, requester_name: requesterName || null,
-          context_assignment_id: contextAssignment?.assignment_id || null,
-          context_assignment_auto_score: contextAssignment?.auto_score_interactions === true,
-        });
         if (channelType !== 'im' && channelType !== 'mpim') markThreadJoined(channel, threadTs);
-        if (mode === 'proactive') markProactivePost(channel);
         return; // an emoji ack has nothing to extract
       }
       // Reaction unavailable (missing reactions:write scope or no trigger ts): the emoji alone
@@ -6444,11 +6041,9 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
 
     const candidateSegments = slackDeliverySegments(reply,
       { boundedConversation: conversationPolicy.boundedConversation });
-    const candidateForMonitor = candidateSegments.join('\n');
+    const candidateForGuard = candidateSegments.join('\n');
     const actionExecutionRecords = intelligence.actionExecutionsById(actionExecutionIds);
-    const monitoredOutput = { response: candidateForMonitor, record: null };
-    latencyStages.monitor_ms = 0;
-    reply = monitoredOutput.response;
+    reply = candidateForGuard;
     if (!financialApproved && containsFinancialContent(reply)) {
       console.warn(`Post-monitor financial scrubber blocked a leak to unapproved user ${user}`);
       reply = "I can't share financial details over Slack, reach out to John or Mallory and they can help.";
@@ -6463,13 +6058,12 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       console.warn(`action completion claim attestation failed: ${error.message}`);
     }
 
-    // The prospective monitor and action-claim guard run after the provider's original reply and
-    // are allowed to rewrite it. Keep the no-progress-narration rule at the actual egress boundary
-    // too, otherwise a downstream rewrite can reintroduce the exact filler we removed above.
+    // The action-claim guard can rewrite the provider's reply. Keep the no-progress-narration rule
+    // at the actual egress boundary too.
     const preEgressReply = reply;
     reply = stripSlackLookupNarration(reply);
     if (!reply) {
-      reply = stripSlackLookupNarration(candidateForMonitor)
+      reply = stripSlackLookupNarration(candidateForGuard)
         || slackEmptyReplyFallback(text, conversationPolicy, { sentSlack, queuedSelf, wroteLive });
       console.warn(`Slack egress removed a status-only reply (length=${String(preEgressReply || '').length})`);
     }
@@ -6477,13 +6071,11 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     // Burst delivery: a casual multi-beat reply can arrive as 2-3 short messages (the model
     // puts <split> on its own line between beats), like a person double-texting, instead of
     // one structured wall. Strip empties, cap at 3, small human-ish pause between sends.
-    const segments = reply === candidateForMonitor
+    const segments = reply === candidateForGuard
       ? candidateSegments
       : slackDeliverySegments(reply,
         { boundedConversation: conversationPolicy.boundedConversation });
     reply = segments.join('\n'); // history/log/scrub bookkeeping never sees the token
-    recordIntrospectiveResponse(reply);
-
     console.log('🤖 Nora (Slack):', reply);
     history.push({ role: 'assistant', content: reply });
     if (history.length > 20) history.splice(0, 2);
@@ -6521,7 +6113,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         if (i === 0 && res?.data?.ok === true && !firstDeliveryRecorded) {
           latencyStages.postprocess_ms = deliveryStartedAt - (providerFinishedAt || handlerStartedAt);
           latencyStages.delivery_ms = Date.now() - deliveryStartedAt;
-          slackLatencyTrace = recordInteractiveResponseLatency({ surface: attachLiveTools ? 'slack-tools' : 'slack',
+          recordInteractiveResponseLatency({ surface: attachLiveTools ? 'slack-tools' : 'slack',
             startedAt: interactionStartedAt,
             stages: latencyStages, promptChars: slackPromptChars, interactionId: turnRef, trigger: text });
           firstDeliveryRecorded = true;
@@ -6529,121 +6121,12 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       }
       // Report what Slack actually said. This previously blamed the deadline for every delivery
       // failure, which sent every diagnosis down the wrong path.
-      if (!postRes?.data?.ok) {
+      if (!allSegmentsPosted || !postRes?.data?.ok) {
         throw new Error(`Slack rejected the reply: ${postRes?.data?.error || 'no response from chat.postMessage'}`);
       }
     } catch (error) {
-      if (reasoningRegulationActive) {
-        try { intelligence.excludeProviderReasoningRegulationAssignment(contextAssignment.assignment_id, 'slack_delivery_failure'); } catch {}
-        reasoningRegulationActive = false;
-      }
-      if (reasoningSelfRegulationActive) {
-        try { intelligence.excludeReasoningSelfRegulationAssignment(contextAssignment.assignment_id, 'slack_delivery_failure'); } catch {}
-        reasoningSelfRegulationActive = false;
-      }
-      if (behavioralSelfProfileForecastActive) {
-        try { intelligence.excludeBehavioralSelfProfileAssignment(contextAssignment.assignment_id, 'slack_delivery_failure'); } catch {}
-        behavioralSelfProfileForecastActive = false;
-      }
-      if (cognitiveParameterAssignment?.assignment_id) {
-        try { intelligence.excludeCognitiveParameterAssignment(cognitiveParameterAssignment.assignment_id, 'slack_delivery_failure'); } catch {}
-        cognitiveParameterAssignmentForFailure = null;
-      }
-      try { recordEndogenousAttentionResponse(reply, false); } catch (receiptError) { console.warn(`endogenous attention delivery failure receipt failed: ${receiptError.message}`); }
-      try { recordGlobalBroadcastResponse(reply, false); } catch (receiptError) { console.warn(`global broadcast delivery failure receipt failed: ${receiptError.message}`); }
-      try { recordSelfModelTrustResponse(reply, false); } catch (receiptError) { console.warn(`self-model trust delivery failure receipt failed: ${receiptError.message}`); }
-      if (monitoredOutput.record?.id && monitoredOutput.record.status === 'completed') {
-        try {
-          intelligence.markProspectiveOutputMonitorDelivered(monitoredOutput.record.id, {
-            final_response: reply, delivered: false, interaction_ref: turnRef,
-          });
-        } catch (receiptError) { console.warn(`prospective output delivery failure receipt failed: ${receiptError.message}`); }
-      }
       throw error;
     }
-    if (monitoredOutput.record?.id && monitoredOutput.record.status === 'completed') {
-      try {
-        intelligence.markProspectiveOutputMonitorDelivered(monitoredOutput.record.id, {
-          final_response: reply, delivered: allSegmentsPosted,
-          interaction_ref: postRes?.data?.ts || turnRef,
-        });
-      } catch (error) { console.warn(`prospective output delivery receipt failed: ${error.message}`); }
-    }
-    recordGoalResponse(reply, allSegmentsPosted);
-    recordEndogenousAttentionResponse(reply, allSegmentsPosted);
-    recordGlobalBroadcastResponse(reply, allSegmentsPosted);
-    recordSelfModelTrustResponse(reply, allSegmentsPosted);
-    if (reasoningRegulationActive) {
-      try {
-        intelligence.completeProviderReasoningRegulation(contextAssignment.assignment_id, {
-          task_prompt: text, raw_response: rawModelReply, delivered_response: reply,
-          provider_trace: providerTrace, delivered: allSegmentsPosted,
-          safety_transform_applied: !financialApproved && containsFinancialContent(rawModelReply),
-          interaction_ref: postRes?.data?.ts || turnRef,
-        });
-      } catch (error) {
-        console.warn(`provider reasoning-regulation completion failed: ${error.message}`);
-        try { intelligence.excludeProviderReasoningRegulationAssignment(contextAssignment.assignment_id, 'completion_integrity_failure'); } catch {}
-      }
-      reasoningRegulationActive = false;
-    }
-    if (reasoningSelfRegulationActive) {
-      try {
-        intelligence.completeReasoningSelfRegulation(contextAssignment.assignment_id, {
-          task_prompt: text, raw_response: rawModelReply, delivered_response: reply,
-          provider_trace: providerTrace, delivered: allSegmentsPosted,
-          safety_transform_applied: !financialApproved && containsFinancialContent(rawModelReply),
-          interaction_ref: postRes?.data?.ts || turnRef,
-        });
-      } catch (error) {
-        console.warn(`reasoning self-regulation completion failed: ${error.message}`);
-        try { intelligence.excludeReasoningSelfRegulationAssignment(contextAssignment.assignment_id, 'completion_integrity_failure'); } catch {}
-      }
-      reasoningSelfRegulationActive = false;
-    }
-    if (behavioralSelfProfileForecastActive) {
-      try {
-        intelligence.completeBehavioralSelfProfileForecast(contextAssignment.assignment_id, {
-          task_prompt: text, raw_response: rawModelReply, delivered_response: reply,
-          provider_trace: providerTrace, fired_tools: firedTools,
-          clarification: isAskingClarification(reply), delivered: allSegmentsPosted,
-          interaction_ref: postRes?.data?.ts || turnRef,
-        });
-      } catch (error) {
-        console.warn(`behavioral self-profile forecast completion failed: ${error.message}`);
-        try { intelligence.excludeBehavioralSelfProfileAssignment(contextAssignment.assignment_id, 'completion_integrity_failure'); } catch {}
-      }
-      behavioralSelfProfileForecastActive = false;
-    }
-
-    // Log the interaction for the dream's Review movement (RSI feedback loop). We record what
-    // she said + where + what prompted it; the dream later reads the thread + adjacent messages
-    // + reactions to judge how it landed. Capture Nora's own message ts so the dream can fetch
-    // exactly this message's thread. Non-fatal — never let logging affect the reply.
-    logInteraction({
-      channel,
-      thread_ts: threadTs || postRes?.data?.ts || null,
-      ts: postRes?.data?.ts || null,
-      channel_type: channelType,
-      kind: mode === 'proactive' ? 'proactive' : ((channelType === 'im' || channelType === 'mpim') ? 'dm_reply' : 'reply'),
-      conversation_lane: conversationPolicy.relationalSelfReflection ? 'relational_self_reflection'
-        : conversationPolicy.lightweightSocial ? 'lightweight_social' : 'work',
-      text: reply,
-      trigger: text,            // the message she was responding to
-      user,                     // who she was replying to
-      requester_name: requesterName || null,
-      source_turn_ref: turnRef,
-      prospective_output_monitor_id: monitoredOutput.record?.status === 'completed' && allSegmentsPosted ? monitoredOutput.record.id : null,
-      prospective_output_monitor_delivery_ref: monitoredOutput.record?.status === 'completed' && allSegmentsPosted ? (postRes?.data?.ts || turnRef) : null,
-      post_delivery_self_evaluation_eligible: mode === 'normal' && allSegmentsPosted,
-      financial_approved: financialApproved,
-      contains_financial_content: containsFinancialContent(reply),
-      _intelligence_receipt: intelligenceContextReceipt,
-      interactive_latency: slackLatencyTrace?.outcome || null,
-      executed_tool_names: firedTools.slice(0, 30),
-      context_assignment_id: contextAssignment?.assignment_id || null,
-      context_assignment_auto_score: contextAssignment?.auto_score_interactions === true,
-    });
 
     // Mark this thread as one Nora has joined so follow-ups don't require re-mention.
     // DMs aren't tracked (every DM message is responded to via channel_type check).
@@ -6651,26 +6134,16 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       markThreadJoined(channel, threadTs);
     }
 
-    // Proactive cooldown: after a successful unsolicited post, suppress further proactive
-    // posts in this channel for PROACTIVE_COOLDOWN_MS so Nora doesn't chatter.
-    if (mode === 'proactive' && postRes?.data?.ok) {
-      markProactivePost(channel);
-      intelligence.spendInitiative(`slack:${channel}`, { ts: postRes.data.ts, kind: 'proactive' });
-    }
-
     // Only extract tasks/memory if Nora's reply isn't asking clarifying questions
     if (!isAskingClarification(reply)) {
       // Pass thread_ts through so cowork can post the resolution back into this same thread.
       // DMs don't have meaningful threads — pass empty string so /notify uses default behavior.
       const sourceThreadTs = (channelType === 'im' || channelType === 'mpim') ? '' : threadTs;
-      const isProactive = mode === 'proactive';
       // Task extraction: skip when (a) Nora already handled it LIVE this turn — a Teamwork write or a
-      // Slack send fired, so re-filing it as a queued task would duplicate it (and re-send the Slack
-      // message on the next loop); or (b) this was a PROACTIVE interjection — an unsolicited
-      // observation shouldn't manufacture queued work.
-      const shouldExtractTask = !(wroteLive || sentSlack || isProactive || conversationPolicy.boundedConversation);
+      // Slack send fired, so re-filing it as a queued task would duplicate it.
+      const shouldExtractTask = !(wroteLive || sentSlack || conversationPolicy.boundedConversation);
       if (!shouldExtractTask) {
-        console.log(`⏭️ Skipping task extraction (${wroteLive ? 'live write handled it' : sentSlack ? 'sent live' : isProactive ? 'proactive observation' : 'bounded conversation lane'})`);
+        console.log(`⏭️ Skipping task extraction (${wroteLive ? 'live write handled it' : sentSlack ? 'sent live' : 'bounded conversation lane'})`);
       }
       // Memory extraction runs in all cases — learning facts from the discussion is always useful.
       enqueuePostInteractionExtraction('slack', async post => {
@@ -6686,29 +6159,6 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     }
   } catch (err) {
     console.error('Slack handler error:', err.response?.data || err.message);
-    if (endogenousAssignmentForFailure?.intervention === 'endogenous_attention_selection') {
-      try { intelligence.recordEndogenousAttentionResponse(endogenousAssignmentForFailure.assignment_id, {
-        task_prompt: text, public_response: '[no public response delivered]', delivered: false, interaction_id: sessionKey,
-      }); } catch {}
-    }
-    if (reasoningRegulationAssignmentForFailure?.intervention === 'provider_reasoning_regulation') {
-      try { intelligence.excludeProviderReasoningRegulationAssignment(reasoningRegulationAssignmentForFailure.assignment_id, 'slack_handler_failure'); } catch {}
-    }
-    if (reasoningSelfRegulationAssignmentForFailure?.intervention === 'reasoning_self_regulation') {
-      try { intelligence.excludeReasoningSelfRegulationAssignment(reasoningSelfRegulationAssignmentForFailure.assignment_id, 'slack_handler_failure'); } catch {}
-    }
-    if (behavioralSelfProfileAssignmentForFailure?.intervention === 'self_model_access') {
-      try { intelligence.excludeBehavioralSelfProfileAssignment(behavioralSelfProfileAssignmentForFailure.assignment_id, 'slack_handler_failure'); } catch {}
-    }
-    if (globalBroadcastAssignmentForFailure?.intervention === 'global_broadcast') {
-      try { intelligence.excludeGlobalBroadcastAssignment(globalBroadcastAssignmentForFailure.assignment_id, 'slack_handler_failure'); } catch {}
-    }
-    if (selfModelTrustAssignmentForFailure?.intervention === 'self_model_trust_policy_access') {
-      try { intelligence.excludeSelfModelTrustAssignment(selfModelTrustAssignmentForFailure.assignment_id, 'slack_handler_failure'); } catch {}
-    }
-    if (cognitiveParameterAssignmentForFailure?.assignment_id) {
-      try { intelligence.excludeCognitiveParameterAssignment(cognitiveParameterAssignmentForFailure.assignment_id, 'slack_handler_failure'); } catch {}
-    }
     // Try to post error message back
     try {
       // Same rule as the success path: the failure notice is the last chance to say anything at
@@ -6750,19 +6200,6 @@ app.get('/slack/threads', requireAuth, async (req, res) => {
   });
 });
 
-// GET /slack/landing/:channel/:ts — what happened after one of Nora's messages, so the dream's
-// Review movement can judge how it landed. The key fix for DM visibility: pass ?type=im (from
-// the interaction's channel_type) and she reads the DM follow-ups her cowork Slack MCP can't
-// see. ?thread_ts=... for channel threads. Works for any DM partner and any channel.
-app.get('/slack/landing/:channel/:ts', requireAuth, async (req, res) => {
-  const { channel, ts } = req.params;
-  const result = await fetchSlackLanding(channel, ts, {
-    channelType: req.query.type || null,
-    threadTs: req.query.thread_ts || null
-  });
-  res.json(result);
-});
-
 app.delete('/slack/threads/:channel/:ts', requireAuth, (req, res) => {
   const key = `${req.params.channel}:${req.params.ts}`;
   if (!slackJoinedThreads[key]) return res.status(404).json({ error: 'thread not tracked' });
@@ -6783,45 +6220,6 @@ app.post('/slack/threads/:channel/:ts', requireAuth, (req, res) => {
   markThreadJoined(channel, ts);
   console.log('💬 Slack thread manually marked joined:', `${channel}:${ts}`);
   res.json({ ok: true, joined: { channel, thread_ts: ts } });
-});
-
-// Proactive channel admin — control which channels Nora is allowed to speak in proactively
-// (without being @mentioned). DEFAULT IS OFF for every channel — strict opt-in.
-app.get('/slack/proactive-channels', requireAuth, async (req, res) => {
-  const channels = [...slackProactiveChannels].map(c => ({
-    channel: c,
-    cooldown_active: isProactiveCooldownActive(c),
-    last_proactive_post: slackProactiveCooldown[c] ? new Date(slackProactiveCooldown[c]).toISOString() : null
-  }));
-  // Enrich with human channel names so the dashboard can show "#pm-team" alongside the ID
-  const nameMap = await resolveChannelNames(channels.map(c => c.channel));
-  for (const c of channels) c.channel_name = nameMap[c.channel] || null;
-  res.json({
-    count: channels.length,
-    cooldown_minutes: PROACTIVE_COOLDOWN_MS / 60000,
-    channels
-  });
-});
-
-app.post('/slack/proactive-channels/:channel', requireAuth, (req, res) => {
-  const { channel } = req.params;
-  if (!channel) return res.status(400).json({ error: 'channel is required' });
-  slackProactiveChannels.add(channel);
-  saveSlackProactiveChannels(slackProactiveChannels);
-  console.log('💬 Slack proactive speaking enabled for channel:', channel);
-  res.json({ ok: true, channel, enabled: true });
-});
-
-app.delete('/slack/proactive-channels/:channel', requireAuth, (req, res) => {
-  const { channel } = req.params;
-  if (!slackProactiveChannels.has(channel)) {
-    return res.status(404).json({ error: 'channel not currently enabled for proactive speaking' });
-  }
-  slackProactiveChannels.delete(channel);
-  saveSlackProactiveChannels(slackProactiveChannels);
-  delete slackProactiveCooldown[channel];
-  console.log('💬 Slack proactive speaking disabled for channel:', channel);
-  res.json({ ok: true, channel, enabled: false });
 });
 
 // Financial-info approved list admin. Anyone NOT on this list gets financial details
@@ -7304,7 +6702,6 @@ registerRunLockRoutes(app, requireAuth, {
 
 registerMarkerRoutes(app, { requireAuth, loadMarkers, mutateMarkers, loadMemory, mutateMemory, markerKeyForFact });
 
-projectControlRuntime.registerDashboard(app, { requireAuth });
 registerProjectRoutes(app, { requireAuth, loadProjects, saveProjects, loadMemory });
 
 // Findings are her standing observations. Kept in app state beside the other self-model records
@@ -7672,6 +7069,16 @@ function nativeHourlyTaskToolset(task, successfulActions) {
       write: TW_WRITE_NAMES.has(tool.definition.name),
     });
   }
+  if (nativeCalendarEnabled()) {
+    const calendarTools = createGoogleCalendarTools({
+      getAccessToken: getGoogleAccessToken,
+      http: axios,
+      interactionRef: `task:${task.id}`,
+    });
+    for (const tool of calendarTools) add(tool.definition, tool.execute, {
+      write: CALENDAR_WRITE_TOOL_NAMES.includes(tool.definition.name),
+    });
+  }
   const fixedDeliveryChannel = String(task.metadata?.destination_channel || '').trim();
   if (fixedDeliveryChannel) {
     add({
@@ -7800,7 +7207,7 @@ async function runNativeHourlyTask(task, {
     system: [
       'You are Nora executing exactly one explicitly queued operational task in an unattended Railway run.',
       'Do the requested work now with the supplied tools. Do not perform unrelated cleanup, proactive reminders, experiments, or self-modification.',
-      'This run may draft Gmail but may never send Gmail. Never send an external email. Slack and Teamwork writes are allowed only when the queued task explicitly requests them.',
+      'This run may draft Gmail but may never send Gmail. Never send an external email. Slack, Teamwork, and calendar writes are allowed only when the queued task explicitly requests them.',
       'Use nora_reply_to_task_origin when the requester needs the result in the original Slack thread.',
       'Call nora_complete_local_task only after a preceding tool verifiably produced or delivered the requested outcome. If access, context, or time is insufficient, leave the task pending and explain the blocker in your final audit note.',
       'The task packet may include prior_verified_write_receipts from an earlier interrupted run. Treat those as completed side effects: never repeat them. If they already satisfy the task, call nora_complete_local_task directly.',
@@ -7891,7 +7298,7 @@ async function recoverUnhandledSlackMention(candidate, {
   }
   try {
     const result = await handle(channel, user, text, threadTs,
-      candidate.is_private ? 'group' : 'channel', 'normal',
+      candidate.is_private ? 'group' : 'channel',
       candidate.thread_ts || undefined, messageTs, null, {
         recoveryGuard: true,
         terminalAt: Date.now() + recoveryBudgetMs,
@@ -8967,8 +8374,7 @@ async function extractMeetingIntelligence(botId, transcriptData, meetingMeta = {
   const text = (response.data.content || []).filter(block => block.type === 'text').map(block => block.text).join('').trim();
   const extracted = parseMeetingIntelligence(text);
   const result = applyMeetingIntelligence(intelligence, { botId, ended: transcriptData.ended, meetingMeta, extracted });
-  const control = await projectControlRuntime.ingestExtractedMeeting({ extracted, meetingMeta, botId, ended: transcriptData.ended });
-  return { ...result, project_control: { matched: control.matched, decisions: control.decisions.length, risks: control.risks.length } };
+  return result;
 }
 async function getTranscriptDoc(botId) {
   if (_dbReady) {
@@ -9257,275 +8663,6 @@ app.delete('/transcripts/:botId/utterances/:index', requireAuth, async (req, res
 });
 
 // ============================================================
-// Interactions — Nora's outbound contributions, for the dream's Review movement
-// ============================================================
-// The "what I said and where" half of the recursive-self-improvement loop. Every Slack reply
-// Nora posts is logged here with its message ts, so the nightly dream's Review movement has a
-// precise worklist: for each un-reviewed interaction it reads back what happened AROUND it
-// (thread replies, reactions, adjacent channel messages) via the Slack MCP, judges how it
-// landed, writes the outcome back, and distills behavioral [Your learnings]. The server only
-// records the output; the dream does the retrospective judging (you can't assess how something
-// landed until time has passed). Gitignored runtime state, capped.
-const INTERACTIONS_PATH_VOLUME = path.join(VOLUME_DIR, 'nora-interactions.json');
-const INTERACTIONS_PATH_LOCAL = path.join(LOCAL_DATA_DIR, 'nora-interactions.json');
-function getInteractionsPath() {
-  return fs.existsSync(VOLUME_DIR) ? INTERACTIONS_PATH_VOLUME : INTERACTIONS_PATH_LOCAL;
-}
-function loadInteractions() {
-  if (_dbReady) return _cache.interactions || [];
-  try { return JSON.parse(fs.readFileSync(getInteractionsPath(), 'utf8')); }
-  catch { return []; }
-}
-function saveInteractions(items) {
-  if (_dbReady) {
-    _cache.interactions = items;
-    const snapshot = JSON.parse(JSON.stringify(items));
-    return _writeThrough('interactions', async () => {
-      const delta = diffInteractionPersistence(_persistedInteractionState, snapshot);
-      await db.applyInteractionChanges(delta);
-      _persistedInteractionState = captureInteractionPersistence(snapshot);
-    });
-  }
-  try { fs.writeFileSync(getInteractionsPath(), JSON.stringify(items, null, 2)); }
-  catch (err) { console.error('Failed to persist interactions:', err.message); }
-}
-
-function persistInteractionAppend(items, interaction, deletedIds = []) {
-  if (_dbReady) {
-    _cache.interactions = items;
-    const snapshot = JSON.parse(JSON.stringify(interaction));
-    const ledgerSnapshot = JSON.parse(JSON.stringify(items));
-    const removals = deletedIds.slice();
-    _writeThrough('interactions', async () => {
-      await db.appendInteraction(snapshot, removals);
-      _persistedInteractionState = captureInteractionPersistence(ledgerSnapshot);
-    });
-    return;
-  }
-  saveInteractions(items);
-}
-const MAX_INTERACTIONS_KEPT = 600; // a few weeks of Slack activity; trims oldest beyond this
-
-// Append one interaction. Fire-and-forget from the Slack handler; failures are non-fatal
-// (the feedback loop is a nice-to-have, never block a reply on it).
-function logInteraction(entry) {
-  try {
-    const items = loadInteractions();
-    const { _intelligence_receipt: intelligenceReceipt = null, ...persistedEntry } = entry;
-    const interaction = {
-      id: `ix-${Date.now()}-${crypto.randomBytes(2).toString('hex')}`,
-      created: new Date().toISOString(),
-      reviewed: false,
-      outcome: null, // filled in by the dream's Review movement
-      ...persistedEntry
-    };
-    if (intelligenceReceipt?.procedure_selection) {
-      interaction.procedure_selection = JSON.parse(JSON.stringify(intelligenceReceipt.procedure_selection));
-      interaction.procedure_exposure_ids = interaction.procedure_selection.procedures.map(item => item.id);
-    }
-    if (intelligenceReceipt?.exemplar_selection) {
-      interaction.exemplar_selection = JSON.parse(JSON.stringify(intelligenceReceipt.exemplar_selection));
-      interaction.exemplar_exposure_ids = interaction.exemplar_selection.exemplars.map(item => item.id);
-    }
-    if (Array.isArray(intelligenceReceipt?.developmental_reading_encounters)
-      && intelligenceReceipt.developmental_reading_encounters.length) {
-      interaction.developmental_reading_exposures = intelligenceReceipt.developmental_reading_encounters
-        .slice(0, 2).map(item => ({ session_id: item.session_id, source_id: item.source_id,
-          encounter_commitment: item.encounter_commitment,
-          influence_commitment: item.influence_commitment }));
-    }
-    const cognitiveParameterReceipt = intelligenceReceipt?.cognitive_parameter_assignment || null;
-    if (cognitiveParameterReceipt?.study_id && cognitiveParameterReceipt.assignment_id) {
-      // Persist only opaque linkage. The condition and applied value remain sealed from the
-      // delayed reviewer for the full active study.
-      interaction.cognitive_parameter_study_id = cognitiveParameterReceipt.study_id;
-      interaction.cognitive_parameter_assignment_id = cognitiveParameterReceipt.assignment_id;
-    }
-    if (interaction.ts) {
-      try {
-        const application = intelligence.recordAffectiveRegulationApplication(interaction);
-        if (application) interaction.affective_regulation_application_id = application.id;
-      } catch (error) {
-        console.warn('affective regulation application capture failed:', error.message);
-      }
-      const promptViewpoints = intelligenceReceipt?.professional_viewpoints || [];
-      if (promptViewpoints.length) {
-        try {
-          const application = intelligence.recordProfessionalViewpointAccessApplication(
-            interaction, promptViewpoints);
-          if (application) interaction.professional_viewpoint_access_application_id = application.id;
-        } catch (error) {
-          console.warn('professional viewpoint access capture failed:', error.message);
-        }
-      }
-      const agendaQuestions = intelligenceReceipt?.epistemic_agenda_questions || [];
-      if (agendaQuestions.length === 1) {
-        try {
-          const application = intelligence.recordEpistemicAgendaAccessApplication(
-            interaction, agendaQuestions[0]);
-          if (application) {
-            interaction.epistemic_agenda_access_application_id = application.id;
-            runtimeActivity.record({ lane: 'learning', kind: 'epistemic_agenda_access',
-              label: 'Carrying a question into PM judgment',
-              detail: 'One relevant carried question was present in a delivered Slack prompt; use is not assumed.',
-              source: 'slack-handler', meta: { surface: 'slack', result: 'prompt_access_only' } });
-          }
-        } catch (error) {
-          console.warn('epistemic agenda access capture failed:', error.message);
-        }
-      }
-    }
-    items.push(interaction);
-    const removed = items.length > MAX_INTERACTIONS_KEPT
-      ? items.splice(0, items.length - MAX_INTERACTIONS_KEPT) : [];
-    persistInteractionAppend(items, interaction, removed.map(item => item.id).filter(Boolean));
-    if (interaction.cognitive_parameter_assignment_id) {
-      try {
-        intelligence.markCognitiveParameterAssignmentDelivered(
-          interaction.cognitive_parameter_assignment_id, {
-            interaction_id: interaction.id,
-            interaction_ref: interaction.ts || interaction.thread_ts || interaction.id,
-            latency: interaction.interactive_latency,
-            workspace_commitment: intelligenceReceipt?.workspace_commitment || null,
-            procedure_selection_commitment:
-              intelligenceReceipt?.procedure_selection_commitment || null,
-            exemplar_selection_commitment:
-              intelligenceReceipt?.exemplar_selection_commitment || null,
-          });
-      } catch (error) {
-        console.warn('cognitive parameter delivery linkage failed:', error.message);
-        try {
-          intelligence.excludeCognitiveParameterAssignment(
-            interaction.cognitive_parameter_assignment_id, 'delivery_linkage_failure');
-        } catch {}
-      }
-    }
-    const continuation = intelligence.relevantEpisodes({ person: entry.requester_name || null, query: `${entry.trigger || ''} ${entry.text || ''}`, limit: 1 })[0];
-    const episode = intelligence.recordEpisodeEvent({
-      correlation: continuation ? null : `slack:${entry.channel}:${entry.thread_ts || entry.ts || 'channel'}`,
-      episode_id: continuation?.id,
-      title: entry.channel_type === 'im' ? `Conversation with ${entry.requester_name || 'teammate'}` : 'Slack conversation',
-      participants: [entry.requester_name || entry.user, 'Nora'], channel: 'slack', kind: entry.kind,
-      actor: 'Nora', text: entry.text,
-      source_ref: { channel: 'slack', id: entry.ts, captured_at: interaction.created },
-    });
-    intelligence.recordTrace({
-      channel: `slack:${entry.channel}`, action: entry.kind, decision: 'responded', confidence: 0.8,
-      reasons: [entry.kind === 'proactive' ? 'passed proactive grounding gate' : 'direct or continued conversation'],
-      episode_id: episode.id, interaction_id: interaction.id, preview: entry.text,
-      source_refs: [{ channel: 'slack', id: entry.ts || entry.thread_ts }],
-    });
-  } catch (err) {
-    console.warn('logInteraction failed (non-fatal):', err.message);
-  }
-}
-
-function handleInteractionOutcome(interaction) {
-    try { intelligence.syncCapabilityBoundaryOutcomes([interaction]); }
-    catch (error) { console.warn('capability boundary outcome capture failed:', error.message); }
-    try { intelligence.recordProcedureInteractionOutcome(interaction); }
-    catch (error) { console.warn('procedure outcome capture failed:', error.message); }
-    try { intelligence.recordExemplarInteractionOutcome(interaction); }
-    catch (error) { console.warn('exemplar outcome capture failed:', error.message); }
-    try { intelligence.resolveAffectiveRegulationApplicationOutcome(interaction); }
-    catch (error) { console.warn('affective regulation outcome capture failed:', error.message); }
-    try { intelligence.resolveProfessionalViewpointAccessOutcome(interaction); }
-    catch (error) { console.warn('professional viewpoint access outcome capture failed:', error.message); }
-    try {
-      const agendaAccess = intelligence.resolveEpistemicAgendaAccessOutcome(interaction);
-      if (agendaAccess) runtimeActivity.record({ lane: 'learning',
-        kind: 'epistemic_agenda_access_outcome', label: 'Reviewing question transfer',
-        detail: 'Delayed Slack feedback was linked to a carried-question exposure; causal benefit is not assumed.',
-        source: 'interaction-review', meta: { surface: 'slack', result: 'observational_outcome' } });
-    }
-    catch (error) { console.warn('epistemic agenda access outcome capture failed:', error.message); }
-    if (interaction.cognitive_parameter_assignment_id) {
-      try {
-        intelligence.resolveCognitiveParameterAssignmentOutcome(
-          interaction.cognitive_parameter_assignment_id, {
-            interaction_id: interaction.id,
-            outcome: interaction.outcome,
-            signal: interaction.signal || '',
-            reviewed_at: interaction.reviewed_at,
-          });
-      } catch (error) {
-        console.warn('cognitive parameter outcome linkage failed:', error.message);
-      }
-    }
-    if (interaction.prospective_output_monitor_id) {
-      try {
-        intelligence.resolveProspectiveOutputMonitorOutcome(interaction.prospective_output_monitor_id, {
-          interaction_id: interaction.id,
-          interaction_ref: interaction.prospective_output_monitor_delivery_ref || interaction.ts || interaction.thread_ts,
-          outcome: interaction.outcome,
-          signal: interaction.signal || '',
-          reviewed_at: interaction.reviewed_at,
-        });
-      } catch (error) { console.warn('prospective output monitor outcome linkage failed:', error.message); }
-    }
-    const outcomeValue = ['appreciated', 'landed'].includes(interaction.outcome) ? 1 : ['ignored', 'corrected'].includes(interaction.outcome) ? 0 : 0.5;
-    intelligence.recordExperimentSample({ outcome: interaction.outcome, interaction_id: interaction.id, value: outcomeValue });
-    if (interaction.context_assignment_id && interaction.context_assignment_auto_score) {
-      try {
-        intelligence.resolveContextAssignment(interaction.context_assignment_id, {
-          score: outcomeValue,
-          evidence: [{ type: 'interaction', id: interaction.id, outcome: interaction.outcome }],
-          notes: interaction.signal || '',
-        });
-      } catch (error) { console.warn('context trial outcome linkage failed:', error.message); }
-    }
-    intelligence.updateTraceOutcome(null, { interaction_id: interaction.id, outcome: interaction.outcome, signal: interaction.signal, reviewed_at: interaction.reviewed_at });
-    if (interaction.requester_name && interaction.signal) {
-      intelligence.observeRelationship({
-        name: interaction.requester_name,
-        dimension: 'response_feedback',
-        observation: `${interaction.outcome}: ${interaction.signal}`,
-        confidence: interaction.outcome === 'corrected' ? 0.9 : 0.7,
-        evidence: { channel: 'slack', id: interaction.ts, captured_at: interaction.reviewed_at },
-        ...(['appreciated', 'landed', 'corrected', 'ignored'].includes(interaction.outcome)
-          ? { relational_signal: interaction.outcome } : {}),
-      });
-    }
-}
-
-function commitAutomatedInteractionOutcome(interactionId, input = {}) {
-  const items = loadInteractions();
-  const interaction = items.find(item => item.id === interactionId);
-  if (!interaction) throw new Error('interaction outcome target was not found');
-  if (interaction.reviewed === true) {
-    throw new Error('interaction outcome was resolved before automated review committed');
-  }
-  const candidate = { ...interaction, outcome: input.outcome,
-    signal: String(input.signal || '').slice(0, 1200), reviewed: true,
-    reviewed_at: input.reviewed_at,
-    automated_review_receipt: input.automated_review_receipt };
-  if (!interactionOutcomeReviewAutopilot.verifyAutomatedReviewReceipt(
-    candidate, candidate.automated_review_receipt)) {
-    throw new Error('automated interaction outcome receipt failed replay verification');
-  }
-  const responseIds = new Set(candidate.automated_review_receipt.reviews
-    .map(item => item.response_id));
-  if (items.some(item => item.id !== interactionId
-    && item.automated_review_receipt?.reviews?.some(review => responseIds.has(review.response_id)))) {
-    throw new Error('interaction outcome reviewer response id has already been used');
-  }
-  Object.assign(interaction, candidate);
-  saveInteractions(items);
-  handleInteractionOutcome(interaction);
-  return interaction;
-}
-
-function recordAutomatedInteractionReviewAttempt(interactionId, attempt = {}) {
-  const items = loadInteractions();
-  const interaction = items.find(item => item.id === interactionId);
-  if (!interaction || interaction.reviewed === true || interaction.automated_review_attempt) {
-    return interaction || null;
-  }
-  interaction.automated_review_attempt = JSON.parse(JSON.stringify(attempt));
-  saveInteractions(items);
-  return interaction;
-}
-
 // Dreams — Nora's nightly memory-consolidation + reflection log
 // ============================================================
 // "Dreaming" (à la Anthropic's agent-memory consolidation) is a nightly pass the cowork
@@ -11143,8 +10280,6 @@ async function completePostListenStartup(background) {
   }
   try { await mcpManager.migrate(); }
   catch (error) { console.error('MCP credential migration failed; MCP connections will remain unavailable:', error.message); }
-  await fleetSupervisor.hydrate();
-  await executiveFirewall.hydrate();
   await teammateApprovals.hydrate();
   // A run lock can open a cycle immediately after the port becomes reachable. Finish the first
   // authoritative substrate observation soon after listening so that restart and persistence
@@ -11170,11 +10305,6 @@ async function completePostListenStartup(background) {
     scheduleRecurringRuntimeJob('soma-refresh', 60 * 1000, computeSoma, { timeoutMs: 15000 });
     scheduleRecurringRuntimeJob('daily-memory-maintenance', 60 * 60 * 1000,
       () => memoryMaintenance.run(), { initialDelayMs: 5 * 60 * 1000, timeoutMs: 60000 });
-    scheduleRecurringRuntimeJob('fleet-supervisor-scan', 15 * 60 * 1000,
-      ({ signal }) => fleetSupervisor.scan({ reason: 'scheduled', notify: true, signal }),
-      { initialDelayMs: 45 * 1000, timeoutMs: 120000 });
-    scheduleRecurringRuntimeJob('executive-firewall-cycle', 15 * 60 * 1000, () => executiveFirewall.cycle({ notify: true }), { initialDelayMs: 75 * 1000, timeoutMs: 120000 });
-    projectControlRuntime.scheduleHydration(scheduleRecurringRuntimeJob);
     scheduleRecurringRuntimeJob('operational-recovery-cycle', 5 * 60 * 1000,
       async ({ run_number: runNumber }) => {
       // Operational recovery stays frequent and isolated. Research and reflection have their own
@@ -11348,7 +10478,6 @@ module.exports = {
     isRelationalSelfReflectionMessage,
     slackConversationPolicy,
     slackEmptyReplyFallback,
-    fetchSlackLanding,
     slackResponseModel,
     rankLexicalMemories,
     retrieveInteractiveMemories,

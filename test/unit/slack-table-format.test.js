@@ -78,7 +78,7 @@ test('Slack table rendering happens only after the final financial egress guard'
   const handler = sourceRegion('async function handleSlackImpl', 'async function getNoraBotUserId');
   const finalFinancialGuard = handler.lastIndexOf('if (!financialApproved && containsFinancialContent(reply))');
   const tableFormatting = handler.indexOf('formatSlackMessagePayload(segments[i])');
-  const tablePrompt = handler.indexOf('SLACK_TABLE_FORMATTING_INSTRUCTION + diagnosisInstruction');
+  const tablePrompt = handler.indexOf('SLACK_TABLE_FORMATTING_INSTRUCTION');
   const fittedPrompt = handler.indexOf('fitSlackSystemPrompt(slackStable, tail, urlBlock)');
   assert.ok(finalFinancialGuard >= 0);
   assert.ok(tableFormatting > finalFinancialGuard,

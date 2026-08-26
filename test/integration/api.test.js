@@ -65,7 +65,8 @@ test('health, API auth, and the reduced dashboard are available', async () => {
   const dashboard = await fetch(base + '/', { headers: { Authorization: `Basic ${auth}` } });
   assert.equal(dashboard.status, 200);
   const html = await dashboard.text();
-  assert.match(html, /data-tab="projects"/);
+  assert.match(html, /data-tab="tasks"/);
+  assert.doesNotMatch(html, /data-tab="projects"/);
   assert.doesNotMatch(html, /data-tab="intelligence"/);
 });
 

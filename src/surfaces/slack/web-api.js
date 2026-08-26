@@ -5,7 +5,6 @@
 // above stays pure and the handler above that stays about conversation rather than transport.
 
 const axios = require('axios');
-const interactionOutcomeReviewAutopilot = require('../../intelligence/interaction-outcome-review-autopilot');
 const { SLACK_TABLE_FORMATTING_INSTRUCTION, formatSlackMessagePayload } = require('./table-format');
 
 // Resolve a Slack user ID to a real display name via users.info. Cached in-memory for
@@ -102,62 +101,6 @@ async function fetchSlackChannelHistory(channel, latestTs, limit = 12,
     if (!signal?.aborted) console.warn('fetchSlackChannelHistory failed:', err.message);
     return null;
   }
-}
-
-// Landing reader for the dream's Review movement: given one of Nora's own messages (channel +
-// its ts), fetch what happened AFTER it so she can judge how it landed. The human follow-ups
-// that are the real signal. Works uniformly across DMs and channels, which is the whole point:
-// the cowork Slack MCP can read channels but not the John<->Nora DM, so her self-review was
-// blind to her most direct conversation. This uses her own bot token (which carries im:history)
-// and keys purely off the interaction's channel id, so it works for a DM with ANYONE, not just
-// John, and for channel threads too. Returns { messages: [...human follow-ups...], truncated }
-// or { error } with a scope hint. Reactions are best-effort and usually empty (the bot token
-// has no reactions:read); the follow-up messages are the primary signal per the routine.
-async function fetchSlackLanding(channel, ts, { channelType, threadTs,
-  get = axios.get, signal = undefined } = {}) {
-  const headers = { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` };
-  const isDM = channelType === 'im' || channelType === 'mpim' || /^D/.test(channel || '');
-  try {
-    let raw = [];
-    let providerResponse = null;
-    let apiMethod = null;
-    if (threadTs && !isDM) {
-      // Channel thread: everything in the thread, then keep what came after her message.
-      const r = await get(`https://slack.com/api/conversations.replies?channel=${encodeURIComponent(channel)}&ts=${encodeURIComponent(threadTs)}&limit=50`, { headers, timeout: 6000, signal });
-      if (!r.data || !r.data.ok) return { error: r.data && r.data.error, scope_hint: scopeHintFor(r.data && r.data.error, isDM) };
-      providerResponse = r.data; apiMethod = 'conversations.replies';
-      raw = Array.isArray(r.data.messages) ? r.data.messages : [];
-    } else {
-      // DM or non-threaded channel message: history at/after her message (oldest=ts inclusive).
-      const params = new URLSearchParams({ channel, oldest: String(ts), inclusive: 'true', limit: '20' });
-      const r = await get(`https://slack.com/api/conversations.history?${params.toString()}`, { headers, timeout: 6000, signal });
-      if (!r.data || !r.data.ok) return { error: r.data && r.data.error, scope_hint: scopeHintFor(r.data && r.data.error, isDM) };
-      providerResponse = r.data; apiMethod = 'conversations.history';
-      raw = (Array.isArray(r.data.messages) ? r.data.messages : []).slice().reverse(); // →chronological
-    }
-    // Keep only what came strictly AFTER her message, and drop her own/bot/system posts.
-    // what's left is how the humans reacted.
-    const after = raw
-      .filter(m => Number(m.ts) > Number(ts))
-      .filter(m => !m.bot_id && m.subtype !== 'bot_message' && (!m.subtype || m.subtype === 'thread_broadcast' || m.subtype === 'file_share'))
-      .map(m => ({ user: m.user || null, text: m.text || '', ts: m.ts, reactions: (m.reactions || []).map(r => ({ name: r.name, count: r.count })) }));
-    const landing = { messages: after.slice(0, 15), truncated: after.length > 15, is_dm: isDM };
-    return { ...landing, provider_readback_receipt:
-      interactionOutcomeReviewAutopilot.createSlackLandingReadbackReceipt({
-        responseData: providerResponse, channel, anchorMessageTs: ts,
-        threadTs: apiMethod === 'conversations.replies' ? threadTs : null,
-        apiMethod, landing, retrievedAt: new Date(),
-      }) };
-  } catch (err) {
-    return { error: err.message };
-  }
-}
-
-function scopeHintFor(err, isDM) {
-  if (err !== 'missing_scope') return null;
-  return isDM
-    ? 'Bot is missing im:history (or mpim:history for group DMs). Add it in OAuth & Permissions and reinstall the app.'
-    : 'Bot is missing channels:history / groups:history for this channel. Add it and reinstall.';
 }
 
 // Turn a fetched Slack thread into Claude message history: each message becomes a labeled
@@ -346,7 +289,6 @@ module.exports = {
   cleanSlackText,
   fetchSlackThread,
   fetchSlackChannelHistory,
-  fetchSlackLanding,
   buildSlackThreadHistory,
   resolveSlackChannelByName,
   resolveSlackUserByName,

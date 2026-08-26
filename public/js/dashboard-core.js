@@ -84,7 +84,6 @@
     }
 
     const pageMeta = {
-      projects: ['Portfolio', 'Review Teamwork projects that need a decision, an owner, or a schedule correction.'],
       tasks: ['Work queue', 'Review Nora\'s pending and scheduled work.'],
       meeting: ['Meetings', 'Join calls, manage meeting bots, and review transcripts.'],
       admin: ['Settings', 'Manage the connections and access controls Nora needs to operate.']
@@ -93,7 +92,7 @@
     let currentFilter = 'pending';
 
     function showTab(name) {
-      if (!pageMeta[name]) name = 'projects';
+      if (!pageMeta[name]) name = 'tasks';
       document.querySelectorAll('.tab').forEach(t => {
         const active = t.dataset.tab === name;
         t.classList.toggle('active', active);
@@ -108,7 +107,6 @@
       closeMobileNav();
       closeCommandPalette();
       if (name === 'tasks') loadTasks();
-      if (name === 'projects') loadProjects();
       if (name === 'meeting') {
         checkMuteState();
         loadTranscripts();

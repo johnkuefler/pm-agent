@@ -3,7 +3,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { evaluateRunSummary, recordRunSummaryEvaluation } = require('../../src/intelligence/run-summary-policy');
-const projectControl = require('../../src/intelligence/project-control');
 
 const EVIDENCE = [{ type: 'teamwork_task', ref: 'tw-40708119' }];
 
@@ -86,7 +85,7 @@ test('an explicit status request is answered even when the run itself was quiet'
 });
 
 test('summary decisions leave compact durable receipts for anti-noise evaluation', () => {
-  const recorded = recordRunSummaryEvaluation(projectControl.emptyLedger(), {
+  const recorded = recordRunSummaryEvaluation({}, {
     recipient: 'John',
     signals: [{ kind: 'quiet_check', description: 'Nothing changed.' },
       { kind: 'bookkeeping', description: 'Updated internal markers.' }],
@@ -94,13 +93,6 @@ test('summary decisions leave compact durable receipts for anti-noise evaluation
   assert.equal(recorded.evaluation.allowed, false);
   assert.equal(recorded.evaluation.receipt.private_signal_count, 2);
   assert.equal(recorded.ledger.summary_evaluations.length, 1);
-  assert.deepEqual(projectControl.report(recorded.ledger, {
-    now: new Date('2026-08-08T14:01:00.000Z'),
-  }).run_summaries, {
-    evaluated: 1,
-    suppressed: 1,
-    allowed: 0,
-    proactive_eligible: 0,
-    private_signals: 2,
-  });
+  assert.equal(recorded.ledger.summary_evaluations.length, 1);
+  assert.equal(recorded.ledger.summary_evaluations[0].classification, 'suppressed');
 });

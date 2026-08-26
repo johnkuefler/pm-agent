@@ -33,7 +33,7 @@ test('every cadence the scheduler supports is reachable from Slack', async () =>
     [{ action: 'Post the standup note', repeat: 'weekdays', local_time: '09:00' }, 'weekdays:09:00'],
     [{ action: 'Send the weekly recap', repeat: 'weekly', weekday: 'monday', local_time: '08:30' }, 'weekly:monday:08:30'],
     [{ action: 'Send the invoice reminder', repeat: 'monthly', day_of_month: 1, local_time: '07:00' }, 'monthly:1:07:00'],
-    [{ action: 'Biweekly portfolio sweep', interval_weeks: 2, local_time: '10:00' }, 'every:2:weeks:10:00'],
+    [{ action: 'Biweekly project sweep', interval_weeks: 2, local_time: '10:00' }, 'every:2:weeks:10:00'],
   ];
   for (const [input, expected] of cases) {
     const { result, added } = queue(input);
