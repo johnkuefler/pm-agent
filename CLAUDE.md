@@ -35,11 +35,11 @@ extracting the piece you came for over editing in place.
 |---|---|
 | `src/surfaces/` | Code extracted out of `server.js`. Surface-specific request handling, transport, and policy. Currently `slack/`. |
 | `src/routes/` | Express route registration. Convention: `registerXRoutes(app, deps)` with explicit dependency injection. |
-| `src/intelligence/` | The cognitive architecture, research apparatus, and the state store. |
+| `src/runtime/` | Runtime safety, persistence, provider receipts, and latency controls. |
 | `src/mcp/` | MCP connection management, credential encryption, SSRF guards. |
 | `src/integrations/` | Outbound third-party clients. |
 | `src/middleware/` | Auth and request-level concerns. |
-| `src/lib/`, `src/runtime/` | Shared primitives. |
+| `src/lib/` | Shared primitives. |
 
 `src/surfaces/` is special: see the test contract below. Extracted server code must go there, not
 somewhere else under `src/`, or its contract coverage silently disappears.

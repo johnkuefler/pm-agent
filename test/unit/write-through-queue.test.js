@@ -9,9 +9,9 @@ test('write-through queue serializes one entity and exposes pending work', async
   let release;
   const held = new Promise(resolve => { release = resolve; });
   const queue = createWriteThroughQueue();
-  const first = queue.enqueue('memory', async () => { order.push('first-start'); await held;
+  const first = queue.enqueue('tasks', async () => { order.push('first-start'); await held;
     order.push('first-end'); });
-  const second = queue.enqueue('memory', async () => { order.push('second'); });
+  const second = queue.enqueue('tasks', async () => { order.push('second'); });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(queue.snapshot().pending, 2);
   assert.equal(queue.snapshot().in_flight, 1);
@@ -19,7 +19,7 @@ test('write-through queue serializes one entity and exposes pending work', async
   await Promise.all([first, second]);
   assert.deepEqual(order, ['first-start', 'first-end', 'second']);
   assert.equal(queue.snapshot().pending, 0);
-  assert.equal(queue.snapshot().entities.memory.completed, 2);
+  assert.equal(queue.snapshot().entities.tasks.completed, 2);
 });
 
 test('a failed lane remains visible until its next durable success', async () => {
@@ -36,10 +36,10 @@ test('a failed lane remains visible until its next durable success', async () =>
 
 test('strict writes reject their caller but do not poison later queued work', async () => {
   const queue = createWriteThroughQueue();
-  await assert.rejects(queue.enqueue('dreams', async () => { throw new Error('commit failed'); },
+  await assert.rejects(queue.enqueue('transcripts', async () => { throw new Error('commit failed'); },
     { strict: true }), /commit failed/);
-  await queue.enqueue('dreams', async () => 'next commit');
-  assert.equal(queue.snapshot().entities.dreams.completed, 1);
+  await queue.enqueue('transcripts', async () => 'next commit');
+  assert.equal(queue.snapshot().entities.transcripts.completed, 1);
   assert.equal(queue.snapshot().current_errors, 0);
 });
 

@@ -25,12 +25,12 @@ function attestation(user = 'UMALLORY', channel = 'DMALLORY', text = '') {
   return { provider: 'slack', status: 'provider_verified', receipt_commitment: 'receipt-1',
     receipt: { cryptographically_verified_at_ingress: true },
     source_snapshot: { event: { user, channel, ts: '1.3',
-      text_sha256: require('../../src/intelligence/external-source-attestation').hash(text) } } };
+      text_sha256: require('../../src/runtime/source-attestation').hash(text) } } };
 }
 
 test('proposal creation is exact, idempotent, versioned, and noise suppressing', () => {
   const created = actions.createProposal(actions.emptyState(), input(), { now: NOW });
-  assert.equal(created.proposal.id, `ta-${require('../../src/intelligence/external-source-attestation').hash(input().dedupe_key).slice(0, 10)}-v1`);
+  assert.equal(created.proposal.id, `ta-${require('../../src/runtime/source-attestation').hash(input().dedupe_key).slice(0, 10)}-v1`);
   assert.equal(actions.integrity(created.proposal), true);
   const duplicate = actions.createProposal(created.state, input(), { now: new Date(NOW.getTime() + 1000) });
   assert.equal(duplicate.created, false);

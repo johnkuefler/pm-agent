@@ -48,17 +48,6 @@ POST /slack/financial-approved/:userId
 DELETE /slack/financial-approved/:userId
 GET /slack/unhandled-mentions
 GET /jobs
-GET /memory
-GET /memory/embedding-stats
-POST /memory/reembed
-POST /memory
-DELETE /memory/by-id/:id
-POST /memory/bulk-delete
-DELETE /memory/:index
-PUT /memory/:idOrIndex
-DELETE /memory
-POST /memory/:id/verify
-POST /memory/:id/contradict
 POST /run-lock
 GET /run-lock
 DELETE /run-lock
@@ -67,7 +56,6 @@ GET /markers/:key
 POST /markers
 POST /markers/bulk
 DELETE /markers/:key
-POST /markers/migrate
 GET /projects
 GET /projects/:name
 POST /projects

@@ -23,9 +23,7 @@ function createRequestPerformanceMonitor({ slowMs = 1000, maxRoutes = 100,
   function deadlineFor(req) {
     const path = String(req.path || req.originalUrl || '/').split('?')[0];
     if (req.method === 'GET' && path === '/runtime-activity/events') return null;
-    if ((req.method === 'GET' && ['/self-model', '/cognition',
-      '/consciousness-research/status'].includes(path))
-      || path === '/admin/drive/upload-artifact'
+    if (path === '/admin/drive/upload-artifact'
       || /\/(?:subject-pair|subject|probe|evaluate)$/.test(path)) return longDeadlineMs;
     return deadlineMs;
   }

@@ -13,12 +13,12 @@
         const conns = (await r.json()).connections || [];
         if (!conns.length) { list.innerHTML = '<p class="empty">No live connections yet. Add one below, authorize it if needed, then test it to discover tools.</p>'; return; }
         list.innerHTML = conns.map(c => `
-          <div class="memory-item">
+          <div class="admin-list-item">
             <div style="flex:1;min-width:0;">
-              <div class="memory-fact">${escHtml(c.name)} ${c.financial ? '<span style="color:var(--warn);font-size:12px;">financial</span>' : ''} ${c.enabled ? '' : '<span style="color:var(--muted);font-size:12px;">(disabled)</span>'}</div>
-              <div class="memory-meta" style="word-break:break-all;">${escHtml(c.url_hint)} &middot; ${escHtml(c.auth_type.replaceAll('_', ' '))} &middot; ${c.access_mode === 'full' ? 'write enabled' : 'read only'}${c.deferred === true ? ' &middot; <span style="color:var(--accent-ink);">background: all tools</span>' : c.deferred === false ? ' &middot; <span style="color:var(--muted);">background: off</span>' : ''}</div>
-              <div class="memory-meta">${escHtml(c.status)}${c.status_message ? `: ${escHtml(c.status_message)}` : ''}${c.last_tested ? ` &middot; tested ${new Date(c.last_tested).toLocaleString()}` : ''}</div>
-              ${c.tools?.length ? `<div class="memory-meta">${c.tools.filter(t => t.allowed).length}/${c.tools.length} tools enabled</div>` : ''}
+              <div class="admin-list-primary">${escHtml(c.name)} ${c.financial ? '<span style="color:var(--warn);font-size:12px;">financial</span>' : ''} ${c.enabled ? '' : '<span style="color:var(--muted);font-size:12px;">(disabled)</span>'}</div>
+              <div class="admin-list-meta" style="word-break:break-all;">${escHtml(c.url_hint)} &middot; ${escHtml(c.auth_type.replaceAll('_', ' '))} &middot; ${c.access_mode === 'full' ? 'write enabled' : 'read only'}${c.deferred === true ? ' &middot; <span style="color:var(--accent-ink);">background: all tools</span>' : c.deferred === false ? ' &middot; <span style="color:var(--muted);">background: off</span>' : ''}</div>
+              <div class="admin-list-meta">${escHtml(c.status)}${c.status_message ? `: ${escHtml(c.status_message)}` : ''}${c.last_tested ? ` &middot; tested ${new Date(c.last_tested).toLocaleString()}` : ''}</div>
+              ${c.tools?.length ? `<div class="admin-list-meta">${c.tools.filter(t => t.allowed).length}/${c.tools.length} tools enabled</div>` : ''}
             </div>
             <div style="display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end;">
               ${c.auth_type === 'oauth' && !c.oauth_connected ? `<button class="btn btn-primary btn-sm" onclick="connectMcpOAuth('${c.id}')">Connect</button>` : ''}
@@ -132,10 +132,10 @@
           return;
         }
         list.innerHTML = d.bots.map(b => `
-          <div class="memory-item">
+          <div class="admin-list-item">
             <div style="flex: 1; min-width: 0;">
-              <div class="memory-fact" style="word-break: break-all;">${escHtml(fmtBotMeetingUrl(b.meeting_url) || '(no meeting URL)')}</div>
-              <div class="memory-meta">${escHtml(fmtBotStatus(b.status))}${b.join_at ? ' · joins ' + escHtml(new Date(b.join_at).toLocaleString()) : ''} · ${escHtml(b.id)}</div>
+              <div class="admin-list-primary" style="word-break: break-all;">${escHtml(fmtBotMeetingUrl(b.meeting_url) || '(no meeting URL)')}</div>
+              <div class="admin-list-meta">${escHtml(fmtBotStatus(b.status))}${b.join_at ? ' · joins ' + escHtml(new Date(b.join_at).toLocaleString()) : ''} · ${escHtml(b.id)}</div>
             </div>
             <div style="display: flex; gap: 6px; flex-shrink: 0;">
               <button class="btn btn-danger" onclick="removeBot('${escHtml(b.id)}', '${escHtml(fmtBotMeetingUrl(b.meeting_url))}')">Remove</button>
@@ -185,10 +185,10 @@
             : '';
           const joinAt = b.join_at ? new Date(b.join_at).toLocaleString() : 'unknown';
           return `
-            <div class="memory-item">
+          <div class="admin-list-item">
               <div style="flex: 1; min-width: 0;">
-                <div class="memory-fact" style="word-break: break-all;">${escHtml(fmtBotMeetingUrl(b.meeting_url) || '(no meeting URL)')}${dupBadge}</div>
-                <div class="memory-meta">joins ${escHtml(joinAt)} · ${escHtml(fmtBotStatus(b.status))} · ${escHtml(b.id)}</div>
+                <div class="admin-list-primary" style="word-break: break-all;">${escHtml(fmtBotMeetingUrl(b.meeting_url) || '(no meeting URL)')}${dupBadge}</div>
+                <div class="admin-list-meta">joins ${escHtml(joinAt)} · ${escHtml(fmtBotStatus(b.status))} · ${escHtml(b.id)}</div>
               </div>
               <div style="display: flex; gap: 6px; flex-shrink: 0;">
                 <button class="btn btn-danger" onclick="removeScheduledBot('${escHtml(b.id)}', '${escHtml(fmtBotMeetingUrl(b.meeting_url))}')">Remove</button>
@@ -254,10 +254,10 @@
         const reconnectButton = d.scheduling_enabled ? ''
           : '<button class="btn btn-primary" onclick="connectCalendar()">Reconnect</button>';
         el.innerHTML = `
-          <div class="memory-item">
+          <div class="admin-list-item">
             <div style="flex: 1;">
-              <div class="memory-fact">${escHtml(d.google_email)}</div>
-              <div class="memory-meta">${escHtml(schedulingStatus)} · Connected ${escHtml(connectedAt)} · Last sync ${escHtml(lastSync)}</div>
+              <div class="admin-list-primary">${escHtml(d.google_email)}</div>
+              <div class="admin-list-meta">${escHtml(schedulingStatus)} · Connected ${escHtml(connectedAt)} · Last sync ${escHtml(lastSync)}</div>
             </div>
             <div style="display: flex; gap: 6px; flex-shrink: 0;">
               ${reconnectButton}
@@ -320,10 +320,10 @@
           return;
         }
         list.innerHTML = d.approved.map(u => `
-          <div class="memory-item">
+          <div class="admin-list-item">
             <div style="flex: 1;">
-              <div class="memory-fact">${escHtml(u.name || '(no name recorded)')}</div>
-              <div class="memory-meta">${escHtml(u.user_id)}</div>
+              <div class="admin-list-primary">${escHtml(u.name || '(no name recorded)')}</div>
+              <div class="admin-list-meta">${escHtml(u.user_id)}</div>
             </div>
             <div style="display: flex; gap: 6px; flex-shrink: 0;">
               <button class="btn btn-danger" onclick="removeApprovedUser('${escHtml(u.user_id)}', '${escHtml(u.name || u.user_id)}')">Remove</button>

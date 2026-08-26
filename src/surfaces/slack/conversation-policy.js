@@ -1,8 +1,6 @@
 'use strict';
 
-// How Nora reads an inbound Slack message and decides what KIND of turn it is: a greeting, a
-// question about her own state, or real project work. That classification drives whether live
-// tools get attached, whether the turn is a valid research sample, and which model answers.
+// How Nora reads an inbound Slack message and distinguishes a greeting from a work request.
 //
 // Pure functions only. No network, no database, no module state. Everything here is decided from
 // the message text and the mode, which is what makes this layer cheap to test exhaustively.
@@ -39,43 +37,13 @@ function slackEmptyReplyFallback(text, conversationPolicy, {
   return "I understood that, but I couldn't complete the action cleanly just now. You don't need to rephrase it, I'll need to retry the action.";
 }
 
-// Questions about Nora's own functional state, preferences, reading, or play need a different
-// attentional lane from project work. They still receive continuity and grounded self-state, but
-// do not need live PM tools or make valid samples for task-performance experiments.
-function isRelationalSelfReflectionMessage(text) {
-  const normalized = String(text || '').trim().toLowerCase().replace(/[\u2018\u2019]/g, "'").replace(/\s+/g, ' ');
-  if (!normalized || normalized.length > 320 || /https?:\/\//.test(normalized)) return false;
-  const directSelfState = [
-    /\b(?:does?|did|would|could|can)\b.{0,120}\b(?:make|leave)\s+you\s+(?:happy|sad|bored|curious|proud|frustrated|satisfied|excited|calm|lonely|fulfilled)\b/,
-    /\b(?:are|were)\s+you\s+(?:happy|sad|bored|curious|proud|frustrated|satisfied|excited|calm|lonely|fulfilled|okay|ok)\b/,
-    /\bhow (?:are you|have you been|has your (?:day|week|weekend|morning|afternoon|evening|friday) been)\b/,
-    /\bhow do you feel(?:\s+about\b|\b)/,
-    /\bdo you (?:enjoy|like|love|hate|care about|dream about)\b/,
-    /\bwhat (?:makes|made) you (?:happy|sad|bored|curious|proud|frustrated|satisfied|excited|calm|fulfilled)\b/,
-    /\bwhat (?:are you|have you been) (?:reading|playing|thinking about)\b/,
-    /\bwhat do you (?:want|prefer|care about|feel)\b(?!\s+to\b)/,
-    /\bhow(?:'s| is) your (?:day|week|weekend|morning|afternoon|evening|friday)(?: been| going)?\b/,
-  ].some(pattern => pattern.test(normalized));
-  if (directSelfState) return true;
-
-  // Treat an immediate natural-language correction as relational only when it contains no work
-  // or action vocabulary. This catches "I said X, not Y" without stealing task corrections.
-  const correction = /\bi said\b.{0,180}\bnot\b|\bthat(?:'s| is) not what i (?:said|asked|meant)\b/.test(normalized);
-  const operational = /\b(project|task|deadline|due|status|client|campaign|teamwork|email|calendar|meeting|deliverable|budget|timeline|brief|report|document|file|drive|send|post|create|update|change|complete|assign|schedule|draft|write|rewrite|analy[sz]e|recommend|plan|prioriti[sz]e|search|look up)\b/.test(normalized);
-  return correction && !operational;
-}
-
 function slackConversationPolicy(text, mode = 'normal') {
   const lightweightSocial = mode === 'normal' && isLightweightSocialSlackMessage(text);
-  const relationalSelfReflection = mode === 'normal' && isRelationalSelfReflectionMessage(text);
-  const boundedConversation = lightweightSocial || relationalSelfReflection;
+  const boundedConversation = lightweightSocial;
   return {
     lightweightSocial,
-    relationalSelfReflection,
     boundedConversation,
     attachLiveTools: !boundedConversation,
-    contextTrialsEnabled: !boundedConversation,
-    pmLearningEnabled: !boundedConversation,
   };
 }
 
@@ -182,7 +150,6 @@ function slackThreadHasNoraReply(parent, replies, botUserId) {
 module.exports = {
   isLightweightSocialSlackMessage,
   slackEmptyReplyFallback,
-  isRelationalSelfReflectionMessage,
   slackConversationPolicy,
   isObviouslyNotForNora,
   slackMessageAllText,

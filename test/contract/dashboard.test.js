@@ -30,7 +30,7 @@ test('dashboard assets are focused, deploy-versioned, and valid JavaScript', () 
     '/assets/js/dashboard-core.js',
     '/assets/js/dashboard-meeting.js',
     '/assets/js/dashboard-tasks.js',
-    '/assets/js/dashboard-knowledge.js',
+    '/assets/js/dashboard-transcripts.js',
     '/assets/js/dashboard-admin.js',
     '/assets/js/dashboard-init.js',
   ]);

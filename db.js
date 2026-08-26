@@ -7,10 +7,6 @@
 // asynchronously. The flat JSON files remain only as (a) a one-time seed on first
 // boot and (b) an offline fallback when DATABASE_URL is unset (local dev).
 //
-// Memory rows carry a pgvector embedding for semantic recall. Embeddings are filled
-// by a background backfiller so the hot write path (Slack replies) never blocks on
-// an embedding API call.
-//
 // Isolation for testing: all tables live in DB_SCHEMA (default 'public'). Tests set
 // DB_SCHEMA=nora_test so they never touch production data in 'public'.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -20,19 +16,12 @@ const { Pool } = require('pg');
 
 const DATABASE_URL = process.env.DATABASE_URL || process.env.DATABASE_PUBLIC_URL || '';
 const DB_SCHEMA = (process.env.DB_SCHEMA || 'public').replace(/[^a-zA-Z0-9_]/g, '') || 'public';
-const EMBED_MODEL = 'text-embedding-3-small';
-const EMBED_DIM = 1536;
-
 let pool = null;
-let interactivePool = null;
 let ready = false;
 const DB_QUERY_TIMEOUT_MS = Math.max(5000, Math.min(60000, Number(process.env.DB_QUERY_TIMEOUT_MS) || 20000));
-const DB_INTERACTIVE_TIMEOUT_MS = Math.max(100, Math.min(3000,
-  Number(process.env.DB_INTERACTIVE_TIMEOUT_MS) || 400));
 const DB_DEGRADED_COOLDOWN_MS = Math.max(10000, Math.min(300000, Number(process.env.DB_DEGRADED_COOLDOWN_MS) || 60000));
 const dbRuntime = { consecutive_connection_failures: 0, degraded_until: 0, last_error: null,
-  last_error_at: null, last_success_at: null, interactive_queries: 0,
-  interactive_failures: 0, interactive_timeouts: 0, interactive_last_error: null,
+  last_error_at: null, last_success_at: null,
   transactions: 0, transaction_failures: 0, discarded_transaction_clients: 0,
   rollback_failures: 0 };
 
@@ -77,31 +66,6 @@ function getPool() {
     });
   });
   return pool;
-}
-
-// Optional conversational recall must never queue behind consolidation, dashboard projection,
-// or an hourly transaction. Give it a tiny independent lane with a sub-second connection and
-// query deadline. If this lane is unavailable, callers simply continue without semantic recall.
-function getInteractivePool() {
-  if (interactivePool) return interactivePool;
-  if (!DATABASE_URL) throw new Error('DATABASE_URL not set');
-  interactivePool = new Pool({
-    connectionString: DATABASE_URL,
-    ssl: { rejectUnauthorized: false },
-    max: 2,
-    idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: DB_INTERACTIVE_TIMEOUT_MS,
-    query_timeout: DB_INTERACTIVE_TIMEOUT_MS,
-    statement_timeout: DB_INTERACTIVE_TIMEOUT_MS,
-    keepAlive: true,
-    keepAliveInitialDelayMillis: 10000,
-    options: `-c search_path=${DB_SCHEMA},public`,
-  });
-  interactivePool.on('error', (err) => {
-    dbRuntime.interactive_last_error = String(err?.message || err).slice(0, 500);
-    console.warn('pg interactive pool error:', err.message);
-  });
-  return interactivePool;
 }
 
 function isConnectionFailure(error) {
@@ -181,15 +145,6 @@ function diagnostics() {
       discarded_clients: dbRuntime.discarded_transaction_clients,
       rollback_failures: dbRuntime.rollback_failures,
     },
-    interactive: {
-      timeout_ms: DB_INTERACTIVE_TIMEOUT_MS,
-      queries: dbRuntime.interactive_queries,
-      failures: dbRuntime.interactive_failures,
-      timeouts: dbRuntime.interactive_timeouts,
-      last_error: dbRuntime.interactive_last_error,
-      pool: interactivePool ? { total: interactivePool.totalCount, idle: interactivePool.idleCount,
-        waiting: interactivePool.waitingCount } : null,
-    },
   };
 }
 
@@ -198,34 +153,7 @@ async function init() {
   const p = getPool();
   await p.query(`CREATE SCHEMA IF NOT EXISTS ${DB_SCHEMA}`);
   await p.query(`SET search_path TO ${DB_SCHEMA}, public`);
-  // Extensions are installed cluster-wide (idempotent).
-  await p.query('CREATE EXTENSION IF NOT EXISTS vector').catch((e) => console.warn('vector ext:', e.message));
-  await p.query('CREATE EXTENSION IF NOT EXISTS pg_trgm').catch((e) => console.warn('pg_trgm ext:', e.message));
-
   await p.query(`
-    CREATE TABLE IF NOT EXISTS ${DB_SCHEMA}.memory (
-      id          text PRIMARY KEY,
-      fact        text NOT NULL,
-      project     text NOT NULL DEFAULT '',
-      added       text,
-      source      text,
-      source_bot_id text,
-      embedding   vector(${EMBED_DIM}),
-      ord         bigint,
-      created_at  timestamptz NOT NULL DEFAULT now(),
-      updated_at  timestamptz NOT NULL DEFAULT now()
-    );
-    CREATE INDEX IF NOT EXISTS memory_project_idx ON ${DB_SCHEMA}.memory (project);
-    CREATE INDEX IF NOT EXISTS memory_source_idx  ON ${DB_SCHEMA}.memory (source);
-    CREATE INDEX IF NOT EXISTS memory_fact_trgm   ON ${DB_SCHEMA}.memory USING gin (fact gin_trgm_ops);
-    -- Memory dynamics (amygdala + Ebbinghaus): salience = how strongly an event encoded;
-    -- recall_count / last_recalled = retrieval strengthening. Idempotent on existing tables.
-    ALTER TABLE ${DB_SCHEMA}.memory
-      ADD COLUMN IF NOT EXISTS salience real NOT NULL DEFAULT 0.3,
-      ADD COLUMN IF NOT EXISTS recall_count integer NOT NULL DEFAULT 0,
-      ADD COLUMN IF NOT EXISTS last_recalled timestamptz,
-      ADD COLUMN IF NOT EXISTS metadata jsonb NOT NULL DEFAULT '{}'::jsonb;
-
     CREATE TABLE IF NOT EXISTS ${DB_SCHEMA}.tasks (
       id            text PRIMARY KEY,
       data          jsonb NOT NULL,
@@ -267,23 +195,6 @@ async function init() {
       id        text PRIMARY KEY,
       data      jsonb NOT NULL,
       ord       bigint
-    );
-
-    CREATE TABLE IF NOT EXISTS ${DB_SCHEMA}.interactions (
-      id       text PRIMARY KEY,
-      data     jsonb NOT NULL,
-      created  timestamptz,
-      reviewed boolean,
-      ord      bigint
-    );
-    CREATE INDEX IF NOT EXISTS interactions_created_idx ON ${DB_SCHEMA}.interactions (created);
-
-    CREATE TABLE IF NOT EXISTS ${DB_SCHEMA}.dreams (
-      id       text PRIMARY KEY,
-      data     jsonb NOT NULL,
-      date     text,
-      finished timestamptz,
-      ord      bigint
     );
 
     CREATE TABLE IF NOT EXISTS ${DB_SCHEMA}.transcripts (
@@ -382,261 +293,7 @@ async function recentJobs(limit = 25) {
   return rows;
 }
 
-// ── Vector helpers ─────────────────────────────────────────────────────────────
-function toVectorLiteral(arr) {
-  if (!Array.isArray(arr) || arr.length !== EMBED_DIM) return null;
-  return '[' + arr.map((x) => (Number.isFinite(x) ? x : 0)).join(',') + ']';
-}
-
-// Embed text via OpenAI. Returns number[] or null (no key / failure — caller degrades
-// gracefully to keyword search). Never throws.
-async function embed(text, { signal = null, timeoutMs = 2500 } = {}) {
-  const key = process.env.OPENAI_API_KEY;
-  if (!key || !text) return null;
-  // Hard timeout: embed() sits in the Slack/Zoom reply path, so a slow/hung embeddings
-  // endpoint must lose fast (recall degrades to []) rather than stall the reply.
-  const ctl = new AbortController();
-  let timedOut = false;
-  const abortFromCaller = () => ctl.abort(signal?.reason);
-  if (signal?.aborted) abortFromCaller();
-  else signal?.addEventListener?.('abort', abortFromCaller, { once: true });
-  const timer = setTimeout(() => {
-    timedOut = true;
-    ctl.abort();
-  }, Math.max(1, Number(timeoutMs) || 2500));
-  try {
-    const res = await fetch('https://api.openai.com/v1/embeddings', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: EMBED_MODEL, input: String(text).slice(0, 8000) }),
-      signal: ctl.signal,
-    });
-    if (!res.ok) { console.warn('embed http', res.status); return null; }
-    const j = await res.json();
-    const v = j && j.data && j.data[0] && j.data[0].embedding;
-    return Array.isArray(v) && v.length === EMBED_DIM ? v : null;
-  } catch (e) {
-    if (ctl.signal.aborted) {
-      if (!timedOut) return null;
-      console.log('Embedding lookup timed out; continuing without semantic-memory recall');
-    } else {
-      console.warn('embed error:', e.message);
-    }
-    return null;
-  }
-  finally {
-    clearTimeout(timer);
-    signal?.removeEventListener?.('abort', abortFromCaller);
-  }
-}
-
-// ── memory ─────────────────────────────────────────────────────────────────────
-async function loadAllMemory() {
-  const { rows } = await q(
-    `SELECT id, fact, project, added, source, source_bot_id, salience, recall_count, last_recalled, metadata FROM ${DB_SCHEMA}.memory ORDER BY ord ASC NULLS LAST, created_at ASC`
-  );
-  return rows.map((r) => {
-    const o = { id: r.id, fact: r.fact, added: r.added, source: r.source, salience: r.salience, recall_count: r.recall_count };
-    if (r.project) o.project = r.project;
-    if (r.source_bot_id) o.source_bot_id = r.source_bot_id;
-    if (r.last_recalled) o.last_recalled = r.last_recalled.toISOString();
-    if (r.metadata && typeof r.metadata === 'object') Object.assign(o, r.metadata);
-    return o;
-  });
-}
-
-// Replace the whole memory set to mirror the old whole-file write. Upsert preserves
-// each row's existing embedding UNLESS the fact text changed (then it is nulled so
-// the backfiller re-embeds). Rows absent from `items` are deleted.
-async function replaceAllMemory(items) {
-  return withTransaction(async client => {
-    const ids = [];
-    let skipped = 0;
-    for (let i = 0; i < items.length; i++) {
-      const m = items[i];
-      if (!m || !m.id || !m.fact) { skipped++; continue; }
-      ids.push(m.id);
-      await client.query(
-        `INSERT INTO ${DB_SCHEMA}.memory (id, fact, project, added, source, source_bot_id, ord, salience, recall_count, last_recalled, metadata, updated_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb, now())
-         ON CONFLICT (id) DO UPDATE SET
-           fact = EXCLUDED.fact,
-           project = EXCLUDED.project,
-           added = EXCLUDED.added,
-           source = EXCLUDED.source,
-           source_bot_id = EXCLUDED.source_bot_id,
-           ord = EXCLUDED.ord,
-           salience = EXCLUDED.salience,
-           metadata = EXCLUDED.metadata,
-           recall_count = GREATEST(${DB_SCHEMA}.memory.recall_count, EXCLUDED.recall_count),
-           last_recalled = GREATEST(${DB_SCHEMA}.memory.last_recalled, EXCLUDED.last_recalled),
-           updated_at = now(),
-           embedding = CASE WHEN ${DB_SCHEMA}.memory.fact IS DISTINCT FROM EXCLUDED.fact
-                            THEN NULL ELSE ${DB_SCHEMA}.memory.embedding END`,
-        [m.id, m.fact, m.project || '', m.added || null, m.source || null, m.source_bot_id || null, i,
-         (typeof m.salience === 'number' ? m.salience : 0.3), m.recall_count || 0, m.last_recalled || null,
-         JSON.stringify({ kind: m.kind, confidence: m.confidence, status: m.status, source_ref: m.source_ref, valid_from: m.valid_from, valid_until: m.valid_until, last_verified: m.last_verified, verification_count: m.verification_count, supersedes: m.supersedes, contradicted_by: m.contradicted_by, sensitivity: m.sensitivity, emotional_weight: m.emotional_weight, social_weight: m.social_weight, retention_class: m.retention_class, pinned: m.pinned, expired_at: m.expired_at, expiration_reason: m.expiration_reason })]
-      );
-    }
-    if (ids.length) {
-      await client.query(`DELETE FROM ${DB_SCHEMA}.memory WHERE id <> ALL($1::text[])`, [ids]);
-    } else {
-      await client.query(`DELETE FROM ${DB_SCHEMA}.memory`);
-    }
-    if (skipped) console.warn(`⚠️  replaceAllMemory skipped ${skipped} row(s) missing id/fact`);
-  });
-}
-
-async function memoryNeedingEmbedding(limit = 32) {
-  const { rows } = await q(
-    `SELECT id, fact FROM ${DB_SCHEMA}.memory WHERE embedding IS NULL ORDER BY updated_at DESC LIMIT $1`,
-    [limit]
-  );
-  return rows;
-}
-
-async function setMemoryEmbedding(id, vec) {
-  const lit = toVectorLiteral(vec);
-  if (!lit) return;
-  await q(`UPDATE ${DB_SCHEMA}.memory SET embedding = $2::vector WHERE id = $1`, [id, lit]);
-}
-
-// Semantic search. Returns [{id, fact, project, source, added, distance}] nearest first.
-// Optional filters: minSource excludes rows, project restricts. Rows without an embedding
-// are skipped (they will get one from the backfiller shortly after being written).
-async function searchMemoryByVector(vec, limit = 12, opts = {}) {
-  const lit = toVectorLiteral(vec);
-  if (!lit) return [];
-  const params = [lit, limit];
-  let where = `embedding IS NOT NULL AND COALESCE(metadata ->> 'status', 'active') = 'active'`;
-  if (opts.excludeSources && opts.excludeSources.length) {
-    params.push(opts.excludeSources);
-    where += ` AND (source IS NULL OR source <> ALL($${params.length}::text[]))`;
-  }
-  if (opts.addedSince) {
-    params.push(opts.addedSince);
-    where += ` AND (added IS NULL OR added >= $${params.length})`;
-  }
-  if (opts.addedBefore) {
-    params.push(opts.addedBefore);
-    where += ` AND added IS NOT NULL AND added < $${params.length}`;
-  }
-  const query = `SELECT id, fact, project, source, added, salience, recall_count, metadata, embedding <=> $1::vector AS distance
-     FROM ${DB_SCHEMA}.memory WHERE ${where}
-     ORDER BY embedding <=> $1::vector ASC LIMIT $2`;
-  let rows;
-  if (opts.interactive) {
-    if (opts.signal?.aborted) return [];
-    dbRuntime.interactive_queries += 1;
-    try {
-      ({ rows } = await getInteractivePool().query({
-        text: query, values: params, query_timeout: DB_INTERACTIVE_TIMEOUT_MS,
-      }));
-      if (opts.signal?.aborted) return [];
-    } catch (error) {
-      dbRuntime.interactive_failures += 1;
-      dbRuntime.interactive_last_error = String(error?.message || error).slice(0, 500);
-      if (/timeout/i.test(dbRuntime.interactive_last_error)) dbRuntime.interactive_timeouts += 1;
-      return [];
-    }
-  } else {
-    ({ rows } = await q(query, params));
-  }
-  return rows.map(row => (row.metadata && typeof row.metadata === 'object' ? { ...row, ...row.metadata } : row));
-}
-
-// Apply only the rows changed by one serialized in-process memory mutation. Ordinary adds,
-// edits, and deletes should not rewrite the entire autobiographical store. The full replace
-// remains available for first-boot migration and schema backfills.
-async function applyMemoryChanges({ upserts = [], deleted_ids: deletedIds = [] } = {}) {
-  if (!upserts.length && !deletedIds.length) return { upserted: 0, deleted: 0 };
-  return withTransaction(async client => {
-    for (const change of upserts) {
-      const m = change.item;
-      await client.query(
-        `INSERT INTO ${DB_SCHEMA}.memory (id, fact, project, added, source, source_bot_id, ord, salience, recall_count, last_recalled, metadata, updated_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb, now())
-         ON CONFLICT (id) DO UPDATE SET
-           fact = EXCLUDED.fact,
-           project = EXCLUDED.project,
-           added = EXCLUDED.added,
-           source = EXCLUDED.source,
-           source_bot_id = EXCLUDED.source_bot_id,
-           ord = EXCLUDED.ord,
-           salience = EXCLUDED.salience,
-           metadata = EXCLUDED.metadata,
-           recall_count = GREATEST(${DB_SCHEMA}.memory.recall_count, EXCLUDED.recall_count),
-           last_recalled = GREATEST(${DB_SCHEMA}.memory.last_recalled, EXCLUDED.last_recalled),
-           updated_at = now(),
-           embedding = CASE WHEN ${DB_SCHEMA}.memory.fact IS DISTINCT FROM EXCLUDED.fact
-                            THEN NULL ELSE ${DB_SCHEMA}.memory.embedding END`,
-        [m.id, m.fact, m.project || '', m.added || null, m.source || null,
-          m.source_bot_id || null, change.ord,
-          (typeof m.salience === 'number' ? m.salience : 0.3), m.recall_count || 0,
-          m.last_recalled || null,
-          JSON.stringify({ kind: m.kind, confidence: m.confidence, status: m.status,
-            source_ref: m.source_ref, valid_from: m.valid_from, valid_until: m.valid_until,
-            last_verified: m.last_verified, verification_count: m.verification_count,
-            supersedes: m.supersedes, contradicted_by: m.contradicted_by,
-            sensitivity: m.sensitivity, emotional_weight: m.emotional_weight,
-            social_weight: m.social_weight, retention_class: m.retention_class,
-            pinned: m.pinned, expired_at: m.expired_at,
-            expiration_reason: m.expiration_reason })]
-      );
-    }
-    if (deletedIds.length) {
-      await client.query(`DELETE FROM ${DB_SCHEMA}.memory WHERE id = ANY($1::text[])`, [deletedIds]);
-    }
-    return { upserted: upserts.length, deleted: deletedIds.length };
-  });
-}
-
-// Retrieval strengthening (reconsolidation): every time memories surface via semantic recall
-// they get stronger. Fire-and-forget from the caller; races with replaceAll are absorbed by
-// the GREATEST() merge in the upsert.
-async function bumpMemoryRecall(ids) {
-  if (!Array.isArray(ids) || !ids.length) return;
-  await q(`UPDATE ${DB_SCHEMA}.memory SET recall_count = recall_count + 1, last_recalled = now() WHERE id = ANY($1::text[])`, [ids]);
-}
-
-// DMN support: a random embedded memory (a wander's starting thought)...
-async function randomEmbeddedMemory() {
-  const { rows } = await q(`SELECT id, fact, project, source FROM ${DB_SCHEMA}.memory WHERE embedding IS NOT NULL ORDER BY random() LIMIT 1`);
-  return rows[0] || null;
-}
-// ...and its semantic neighborhood at a chosen band. offset skips the trivially-near ones so a
-// wander drifts to the interesting middle distance instead of circling the same thought.
-async function neighborsOfMemory(id, offset = 4, limit = 6) {
-  const { rows } = await q(
-    `SELECT id, fact, project, source,
-            embedding <=> (SELECT embedding FROM ${DB_SCHEMA}.memory WHERE id = $1) AS distance
-     FROM ${DB_SCHEMA}.memory
-     WHERE id <> $1 AND embedding IS NOT NULL
-     ORDER BY distance ASC OFFSET $2 LIMIT $3`,
-    [id, offset, limit]
-  );
-  return rows;
-}
-
-// Clear embeddings so the background backfiller re-computes them (a "re-vectorize").
-// Optional filters restrict the scope. Only touches rows that currently HAVE an embedding,
-// so the returned count is exactly how many were queued for re-embedding.
-async function clearEmbeddings(opts = {}) {
-  const params = [];
-  let where = 'embedding IS NOT NULL';
-  if (opts.source)  { params.push(opts.source);  where += ` AND source = $${params.length}`; }
-  if (opts.project) { params.push(opts.project); where += ` AND project = $${params.length}`; }
-  const r = await q(`UPDATE ${DB_SCHEMA}.memory SET embedding = NULL WHERE ${where}`, params);
-  return r.rowCount || 0;
-}
-
-// Vectorization coverage, for the dashboard + scheduled logging.
-async function embeddingStats() {
-  const { rows } = await q(`SELECT count(*)::int AS total, count(embedding)::int AS embedded FROM ${DB_SCHEMA}.memory`);
-  return rows[0];
-}
-
-// ── generic array-of-records tables (tasks/projects/interactions/dreams/mcp) ────
+// ── generic array-of-records tables (tasks/projects/mcp) ──────────
 function makeReplaceAll(table, mapRow) {
   return async function replaceAll(items) {
     return withTransaction(async client => {
@@ -706,22 +363,6 @@ async function replaceAllProjects(items) {
   });
 }
 
-async function loadAllInteractions() {
-  const { rows } = await q(`SELECT data FROM ${DB_SCHEMA}.interactions ORDER BY ord ASC NULLS LAST, created ASC`);
-  return rows.map((r) => r.data);
-}
-const replaceAllInteractions = makeReplaceAll('interactions', (x, i) => {
-  if (!x || !x.id) return null;
-  return {
-    id: x.id,
-    sql: `INSERT INTO ${DB_SCHEMA}.interactions (id, data, created, reviewed, ord)
-          VALUES ($1,$2,$3,$4,$5)
-          ON CONFLICT (id) DO UPDATE SET data=EXCLUDED.data, created=EXCLUDED.created,
-            reviewed=EXCLUDED.reviewed, ord=EXCLUDED.ord`,
-    params: [x.id, x, x.created || null, !!x.reviewed, i],
-  };
-});
-
 async function applyTaskChanges({ upserts = [], deleted_ids: deletedIds = [] } = {}) {
   if (!upserts.length && !deletedIds.length) return { upserted: 0, deleted: 0 };
   return withTransaction(async client => {
@@ -743,52 +384,6 @@ async function applyTaskChanges({ upserts = [], deleted_ids: deletedIds = [] } =
   });
 }
 
-// The live Slack path appends one interaction at a time. Persist that append directly instead
-// of replaying the entire bounded review ledger after every human-facing response.
-async function appendInteraction(item, deletedIds = []) {
-  if (!item?.id) throw new Error('interaction append requires an id');
-  const snapshot = JSON.parse(JSON.stringify(item));
-  const createdMs = new Date(snapshot.created).getTime();
-  const ord = Number.isFinite(createdMs) ? createdMs : Date.now();
-  return withTransaction(async client => {
-    await client.query(
-      `INSERT INTO ${DB_SCHEMA}.interactions (id, data, created, reviewed, ord)
-       VALUES ($1,$2,$3,$4,$5)
-       ON CONFLICT (id) DO UPDATE SET data=EXCLUDED.data, created=EXCLUDED.created,
-         reviewed=EXCLUDED.reviewed, ord=EXCLUDED.ord`,
-      [snapshot.id, snapshot, snapshot.created || null, !!snapshot.reviewed, ord]
-    );
-    if (deletedIds.length) {
-      await client.query(`DELETE FROM ${DB_SCHEMA}.interactions WHERE id = ANY($1::text[])`,
-        [deletedIds]);
-    }
-    return { appended: snapshot.id, deleted: deletedIds.length };
-  });
-}
-
-async function applyInteractionChanges({ upserts = [], deleted_ids: deletedIds = [] } = {}) {
-  if (!upserts.length && !deletedIds.length) return { upserted: 0, deleted: 0 };
-  return withTransaction(async client => {
-    for (const interaction of upserts) {
-      if (!interaction?.id) continue;
-      const createdMs = new Date(interaction.created).getTime();
-      const ord = Number.isFinite(createdMs) ? createdMs : Date.now();
-      await client.query(
-        `INSERT INTO ${DB_SCHEMA}.interactions (id, data, created, reviewed, ord)
-         VALUES ($1,$2,$3,$4,$5)
-         ON CONFLICT (id) DO UPDATE SET data=EXCLUDED.data, created=EXCLUDED.created,
-           reviewed=EXCLUDED.reviewed`,
-        [interaction.id, interaction, interaction.created || null, !!interaction.reviewed, ord]
-      );
-    }
-    if (deletedIds.length) {
-      await client.query(`DELETE FROM ${DB_SCHEMA}.interactions WHERE id = ANY($1::text[])`,
-        [deletedIds]);
-    }
-    return { upserted: upserts.length, deleted: deletedIds.length };
-  });
-}
-
 async function upsertProject(project) {
   if (!project?.name) throw new Error('project upsert requires a name');
   const snapshot = JSON.parse(JSON.stringify(project));
@@ -801,44 +396,6 @@ async function upsertProject(project) {
       snapshot.last_activity || null, !!snapshot.auto_created, snapshot]
   );
   return snapshot.name;
-}
-
-async function loadAllDreams() {
-  const { rows } = await q(`SELECT data FROM ${DB_SCHEMA}.dreams ORDER BY finished DESC NULLS LAST, ord ASC NULLS LAST`);
-  return rows.map((r) => r.data);
-}
-const replaceAllDreams = makeReplaceAll('dreams', (d, i) => {
-  if (!d || !d.id) return null;
-  return {
-    id: d.id,
-    sql: `INSERT INTO ${DB_SCHEMA}.dreams (id, data, date, finished, ord)
-          VALUES ($1,$2,$3,$4,$5)
-          ON CONFLICT (id) DO UPDATE SET data=EXCLUDED.data, date=EXCLUDED.date,
-            finished=EXCLUDED.finished, ord=EXCLUDED.ord`,
-    params: [d.id, d, d.date || null, d.finished || null, i],
-  };
-});
-
-async function applyDreamChanges({ upserts = [], deleted_ids: deletedIds = [] } = {}) {
-  if (!upserts.length && !deletedIds.length) return { upserted: 0, deleted: 0 };
-  return withTransaction(async client => {
-    for (const dream of upserts) {
-      if (!dream?.id) continue;
-      const finishedMs = new Date(dream.finished || dream.started).getTime();
-      const ord = Number.isFinite(finishedMs) ? finishedMs : Date.now();
-      await client.query(
-        `INSERT INTO ${DB_SCHEMA}.dreams (id, data, date, finished, ord)
-         VALUES ($1,$2,$3,$4,$5)
-         ON CONFLICT (id) DO UPDATE SET data=EXCLUDED.data, date=EXCLUDED.date,
-           finished=EXCLUDED.finished`,
-        [dream.id, dream, dream.date || null, dream.finished || null, ord]
-      );
-    }
-    if (deletedIds.length) {
-      await client.query(`DELETE FROM ${DB_SCHEMA}.dreams WHERE id = ANY($1::text[])`, [deletedIds]);
-    }
-    return { upserted: upserts.length, deleted: deletedIds.length };
-  });
 }
 
 async function loadAllMcp() {
@@ -1055,24 +612,15 @@ async function count(table) {
 }
 
 async function close() {
-  await Promise.all([
-    pool ? pool.end().catch(() => {}) : null,
-    interactivePool ? interactivePool.end().catch(() => {}) : null,
-  ]);
+  if (pool) await pool.end().catch(() => {});
   pool = null;
-  interactivePool = null;
   ready = false;
 }
 
 module.exports = {
-  dbEnabled, isReady, init, close, q, embed, count, backgroundAllowed, diagnostics,
-  EMBED_DIM, EMBED_MODEL, DB_SCHEMA,
-  loadAllMemory, replaceAllMemory, applyMemoryChanges, memoryNeedingEmbedding, setMemoryEmbedding, searchMemoryByVector,
-  clearEmbeddings, embeddingStats, bumpMemoryRecall, randomEmbeddedMemory, neighborsOfMemory,
+  dbEnabled, isReady, init, close, q, count, backgroundAllowed, diagnostics, DB_SCHEMA,
   loadAllTasks, replaceAllTasks, applyTaskChanges,
   loadAllProjects, replaceAllProjects, upsertProject,
-  loadAllInteractions, replaceAllInteractions, appendInteraction, applyInteractionChanges,
-  loadAllDreams, replaceAllDreams, applyDreamChanges,
   loadAllMcp, replaceAllMcp,
   loadAllMarkers, replaceAllMarkers, applyMarkerChanges,
   loadAllSlackThreads, replaceAllSlackThreads, applySlackThreadChanges,

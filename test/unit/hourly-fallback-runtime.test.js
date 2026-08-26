@@ -182,7 +182,6 @@ test('native task checkpoints back off one blocked item without starving the que
 
 test('native task history separates verified outcomes from writes with unknown outcomes', () => {
   const history = __test.nativeTaskExecutionHistory('task-history', {
-    experimental_access_sealed: false,
     executions: [
       {
         id: 'verified-write', surface: 'railway_hourly', interaction_ref: 'task-history',
@@ -210,7 +209,4 @@ test('native task history separates verified outcomes from writes with unknown o
     execution_id: 'uncertain-write', tool_name: 'nora_reply_to_task_origin',
     status: 'selected', selected: '2026-07-23T04:01:00.000Z',
   }]);
-  assert.equal(__test.nativeTaskExecutionHistory('task-history', {
-    experimental_access_sealed: true,
-  }).available, false);
 });

@@ -10,7 +10,7 @@
 // never turn a successful response into a failed one. And a surface with no budget is not measured
 // at all rather than measured against zero.
 
-const interactivePerformance = require('../intelligence/interactive-performance');
+const interactivePerformance = require('../runtime/interactive-performance');
 
 function createInteractiveLatencyRecorder({ recordTrace }) {
   return function recordInteractiveResponseLatency({ surface, startedAt, stages = {},

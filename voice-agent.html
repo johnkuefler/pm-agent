@@ -239,7 +239,7 @@
       <div class="panel-title">Inner systems</div>
       <div class="brainline" aria-hidden="true"></div>
       <div class="micro-log">
-        <div id="log-memory">Memory prompt: preparing</div>
+        <div id="log-context">Meeting context: preparing</div>
         <div id="log-tools">Live tools: checking</div>
         <div id="log-transcript">Transcript: waiting for first line</div>
         <div id="log-refresh">Refresh: not yet</div>
@@ -268,7 +268,7 @@
       muted: { dot: document.getElementById('sig-muted-dot'), value: document.getElementById('sig-muted') },
     };
     const logs = {
-      memory: document.getElementById('log-memory'),
+      context: document.getElementById('log-context'),
       tools: document.getElementById('log-tools'),
       transcript: document.getElementById('log-transcript'),
       refresh: document.getElementById('log-refresh'),
@@ -344,7 +344,7 @@
       if (context.eagerness) chips.eagerness.textContent = `turn gate: ${context.eagerness}`;
       if (context.model) chips.model.textContent = `voice model: ${context.model}`;
       if (typeof context.diagnostics_visible === 'boolean') setDiagnosticsVisible(context.diagnostics_visible);
-      if (Number.isFinite(Number(context.prompt_chars))) logs.memory.textContent = `Memory prompt: ${compactNumber(context.prompt_chars)} chars loaded`;
+      if (Number.isFinite(Number(context.prompt_chars))) logs.context.textContent = `Meeting context: ${compactNumber(context.prompt_chars)} chars loaded`;
       if (Number.isFinite(Number(context.voice_tools))) logs.tools.textContent = `Live tools: ${context.voice_tools} read tools available`;
       if (context.project_hint) logs.transcript.textContent = `Project hint: ${context.project_hint}`;
       if (context.refreshed_at) logs.refresh.textContent = `Refresh: ${new Date(context.refreshed_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;

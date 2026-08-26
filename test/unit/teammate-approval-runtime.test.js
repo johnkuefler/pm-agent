@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createTeammateApprovalRuntime } = require('../../src/approvals/runtime');
-const { hash } = require('../../src/intelligence/external-source-attestation');
+const { hash } = require('../../src/runtime/source-attestation');
 
 function proposalInput(overrides = {}) {
   return { dedupe_key: 'morton:hypercare', project_key: 'morton-salt',

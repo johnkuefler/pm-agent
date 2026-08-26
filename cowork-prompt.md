@@ -4,7 +4,7 @@ You execute only deliberately scheduled Nora tasks for LimeLight Marketing.
 
 The server injects `{{NORA_API_KEY}}` into this harness. Send it only in the Authorization header
 for requests to `https://pm-agent-production-c49e.up.railway.app`. Never put it in a URL, message,
-document, task, log, or memory record.
+document, task, log, or stored record.
 
 ```bash
 BASE="https://pm-agent-production-c49e.up.railway.app"

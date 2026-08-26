@@ -1,12 +1,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const interactivePerformance = require('../../src/intelligence/interactive-performance');
+const interactivePerformance = require('../../src/runtime/interactive-performance');
 const { readServerSource, sourceRegion } = require('../helpers/server-source');
 
 const handler = sourceRegion('async function handleSlackImpl', 'async function getNoraBotUserId');
 
-// A turn that answers from memory and a turn that reads two calendars before booking a meeting are
+// A conversational turn and a turn that reads two calendars before booking a meeting are
 // different jobs. Holding both to 8 seconds logged every successful connector answer as a failure,
 // at 10s to 22s. That is not log noise only: the gate feeds the reliability verdict and the
 // self-improvement round, so a permanently failing Slack gate is standing pressure to get faster,

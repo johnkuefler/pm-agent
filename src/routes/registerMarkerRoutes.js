@@ -1,7 +1,7 @@
 'use strict';
 
 function registerMarkerRoutes(app, deps) {
-  const { requireAuth, loadMarkers, mutateMarkers, loadMemory, mutateMemory, markerKeyForFact } = deps;
+  const { requireAuth, loadMarkers, mutateMarkers } = deps;
 
   // GET /markers — all markers, or ?prefix=filed-transcript: to list a category.
   app.get('/markers', requireAuth, (req, res) => {
@@ -52,44 +52,6 @@ function registerMarkerRoutes(app, deps) {
     res.json({ ok: true, existed: result });
   });
 
-  // POST /markers/migrate — one-time cleanup: scan /memory for marker-shaped entries, move
-  // them into /markers (keyed canonically), and remove them from /memory. ?dry_run=true to
-  // preview without changing anything. Idempotent — re-running finds nothing new. This is what
-  // drains the thousands of bookkeeping entries out of the knowledge store.
-  app.post('/markers/migrate', requireAuth, async (req, res) => {
-    const dryRun = req.query.dry_run === 'true' || (req.body && req.body.dry_run === true);
-    const memory = loadMemory();
-    const toMove = [];   // { id, key, fact, added }
-    for (const m of memory) {
-      // Never migrate real knowledge classes, even if a fact happens to look marker-ish.
-      if (m.source === 'opinion' || m.source === 'learning') continue;
-      const key = markerKeyForFact(m.fact);
-      if (key) toMove.push({ id: m.id, key, fact: m.fact, added: m.added });
-    }
-    const byCategory = {};
-    for (const t of toMove) { const cat = t.key.split(':')[0]; byCategory[cat] = (byCategory[cat] || 0) + 1; }
-
-    if (dryRun) {
-      return res.json({ dry_run: true, would_move: toMove.length, by_category: byCategory, sample: toMove.slice(0, 10).map(t => ({ key: t.key, fact: t.fact.slice(0, 80) })) });
-    }
-
-    // Write markers first (so even if the delete half is interrupted, no idempotency is lost).
-    await mutateMarkers(markers => {
-      for (const t of toMove) {
-        if (!markers[t.key]) markers[t.key] = { set_at: t.added ? `${t.added}T00:00:00.000Z` : new Date().toISOString(), migrated_from_memory: true, note: t.fact.slice(0, 200) };
-      }
-    });
-    // Then remove the migrated entries from memory, by id, atomically.
-    const moveIds = new Set(toMove.map(t => t.id));
-    const { result: removed } = await mutateMemory(mem => {
-      const kept = mem.filter(x => !moveIds.has(x.id));
-      const gone = mem.length - kept.length;
-      mem.length = 0; mem.push(...kept);
-      return gone;
-    });
-    console.log(`📦 Markers migration: moved ${toMove.length} markers out of memory, removed ${removed} memory entries`);
-    res.json({ ok: true, moved: toMove.length, removed_from_memory: removed, by_category: byCategory });
-  });
 }
 
 module.exports = { registerMarkerRoutes };

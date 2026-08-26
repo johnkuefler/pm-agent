@@ -56,22 +56,6 @@ const OUTGOING_BUILD_QUALITY_SIGNALS = new Set([
   'interactive_prompt_failing',
 ]);
 
-// Post-interaction extraction is optional and preemptible, but an item can be
-// stranded before it ever starts when the shared background lease stays busy.
-// Recent or active work still blocks. Only a queue that has been idle for at
-// least five minutes, with nothing busy or in flight, is known not to be work a
-// restart can interrupt.
-const POST_INTERACTION_WEDGED_MIN_AGE_MS = 5 * 60 * 1000;
-
-function postInteractionWorkWedged(postInteraction = {}) {
-  const queued = Math.max(0, Number(postInteraction.queued) || 0);
-  const oldestAgeMs = Math.max(0, Number(postInteraction.oldest_queued_age_ms) || 0);
-  return queued > 0
-    && postInteraction.busy !== true
-    && postInteraction.in_flight !== true
-    && oldestAgeMs >= POST_INTERACTION_WEDGED_MIN_AGE_MS;
-}
-
 function transcriptCheckpointsWedged(checkpoints = {}) {
   const attempts = Math.max(0, Number(checkpoints.maximum_retry_attempt) || 0);
   const retrying = Math.max(0, Number(checkpoints.retrying) || 0);
@@ -133,18 +117,6 @@ function assessDeployReadiness({ lock = {}, activeBots = {}, routine = null,
         // waiting. A mixed verdict still blocks on whatever else is in it.
         wedged.push({ ...entry, reason: 'every signal measures the build being replaced, and a '
           + 'deploy is the only thing that can change them' });
-      } else blockers.push(entry);
-    }
-    const postInteraction = runtimePerformance.background_work?.post_interaction || {};
-    const queued = Math.max(0, Number(postInteraction.queued) || 0);
-    if (queued > 0 || postInteraction.busy === true) {
-      const entry = { kind: 'post_interaction_work_pending', queued,
-        busy: postInteraction.busy === true, next: postInteraction.next || null };
-      if (postInteractionWorkWedged(postInteraction)) {
-        wedged.push({ ...entry,
-          reason: 'optional post-interaction work has not started for at least five minutes; '
-            + 'there is no active work to interrupt and restarting clears the stranded queue',
-          oldest_queued_age_ms: Math.max(0, Number(postInteraction.oldest_queued_age_ms) || 0) });
       } else blockers.push(entry);
     }
     const pendingCheckpoints = Math.max(0, Number(checkpointLane.pending) || 0);
@@ -261,6 +233,5 @@ if (require.main === module) {
 }
 
 module.exports = { DEFAULT_BASE_URL, REQUIRED_ROUTINE_MARKERS, WEDGED_RETRY_ATTEMPTS,
-  POST_INTERACTION_WEDGED_MIN_AGE_MS, transcriptCheckpointsWedged,
-  postInteractionWorkWedged, assessRoutineContract,
+  transcriptCheckpointsWedged, assessRoutineContract,
   assessDeployReadiness, checkDeployReadiness };

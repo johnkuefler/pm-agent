@@ -40,18 +40,13 @@ const { registerCoworkInstructionsRoute } = require('./src/routes/cowork-instruc
 const { registerUiRoutes } = require('./src/routes/ui');
 const { registerRunLockRoutes } = require('./src/routes/registerRunLockRoutes');
 const { registerRuntimeActivityRoutes } = require('./src/routes/runtime-activity');
-const { registerMemoryRoutes } = require('./src/routes/registerMemoryRoutes');
-const { isAskingClarification } = require('./src/surfaces/slack/reply-intent');
 const { createInteractiveLatencyRecorder } = require('./src/surfaces/interactive-latency');
-const { createInteractiveMemoryRecall } = require('./src/surfaces/memory/interactive-recall');
 const { registerMarkerRoutes } = require('./src/routes/registerMarkerRoutes');
 const { registerProjectRoutes } = require('./src/routes/registerProjectRoutes');
 const { registerTaskRoutes } = require('./src/routes/registerTaskRoutes');
-const { requireAuth, requireDashboardAuth, requireResearchAuth, requireEvaluatorAuth, requireOperatorAuth } = require('./src/middleware/auth');
-const { normalizeMemoryRecord, memoryIsActive, memoryPromptLine } = require('./src/intelligence/models');
-const memoryLifecycle = require('./src/intelligence/memory-lifecycle');
-const { createIntelligenceStore } = require('./src/intelligence/store');
-const { meetingTurnDecision } = require('./src/intelligence/policy');
+const { requireAuth, requireDashboardAuth, requireOperatorAuth } = require('./src/middleware/auth');
+const { createOperationStore } = require('./src/runtime/operation-store');
+const { meetingTurnDecision } = require('./src/surfaces/meeting/turn-policy');
 const { createMcpManager } = require('./src/mcp/manager');
 const { createMcpStore } = require('./src/mcp/store');
 const { WRITE_TOOL_NAMES: TEAMWORK_PLANNING_WRITE_TOOL_NAMES,
@@ -61,11 +56,9 @@ const { WRITE_TOOL_NAMES: CALENDAR_WRITE_TOOL_NAMES,
 const { mcpCapabilityLabel } = require('./src/mcp/fleet-policy');
 const { createFleetRequestAuthority } = require('./src/mcp/fleet-authorization');
 const { registerTeammateApprovalRuntime } = require('./src/approvals/server-runtime');
-const { findJohnSlackId } = require('./src/surfaces/slack/owner');
-const { applyMeetingIntelligence, compactTranscript, meetingIntelligenceSystemPrompt, parseMeetingIntelligence } = require('./src/intelligence/meeting');
-const externalSourceAttestation = require('./src/intelligence/external-source-attestation');
-const executionClaimGuard = require('./src/intelligence/execution-claim-guard');
-const slackEvidence = require('./src/intelligence/slack-evidence');
+const externalSourceAttestation = require('./src/runtime/source-attestation');
+const executionClaimGuard = require('./src/runtime/execution-claim-guard');
+const slackEvidence = require('./src/surfaces/slack/evidence');
 const { looksLikeQuestion, TEAM_FIRST_NAMES, VOCATIVE_FILLERS, addressesSomeoneElse } =
   require('./src/surfaces/meeting/turn-taking');
 const { describeTranscript, filterTranscriptsByStatus,
@@ -80,7 +73,7 @@ const { createRecallWebhookVerificationMiddleware } = require('./src/surfaces/me
 // Slack surface. Extracted from this file; see CLAUDE.md for why new Slack code belongs in
 // src/surfaces/slack/ rather than here.
 const { boundedTerminalAt: boundedSlackTerminalAt } = require('./src/surfaces/slack/budget');
-const { isLightweightSocialSlackMessage, slackEmptyReplyFallback, isRelationalSelfReflectionMessage,
+const { isLightweightSocialSlackMessage, slackEmptyReplyFallback,
   slackConversationPolicy, slackMessageAllText, slackResponseModel, slackSessionKey, isObviouslyNotForNora,
   stripSlackLookupNarration, slackReplyRequestsSilence,
   slackDeliverySegments, slackThreadHasNoraReply } = require('./src/surfaces/slack/conversation-policy');
@@ -89,7 +82,7 @@ const { getSlackUserIdentity, getSlackUserName, cleanSlackText, fetchSlackThread
   buildSlackThreadHistory, resolveSlackChannelByName, resolveSlackUserByName,
   postSlackMessageReceipt, postSlackMessage, trySlackReaction, resetSlackReactionCapabilityForTest, resolveChannelName,
   resolveChannelNames, SLACK_TABLE_FORMATTING_INSTRUCTION, formatSlackMessagePayload } = require('./src/surfaces/slack/web-api');
-const interactivePerformance = require('./src/intelligence/interactive-performance');
+const interactivePerformance = require('./src/runtime/interactive-performance');
 const driveArtifactUpload = require('./src/integrations/drive-artifact-upload');
 const { createRuntimeActivityStream } = require('./src/runtime/activity-stream');
 const { createRequestPerformanceMonitor } = require('./src/runtime/request-performance');
@@ -97,12 +90,10 @@ const { createWebSocketLivenessMonitor } = require('./src/runtime/websocket-live
 const { createResponseWatchdogMonitor } = require('./src/runtime/response-watchdog');
 const { assessRuntimeReliability } = require('./src/runtime/reliability-verdict');
 const { hourlyLifecycleHealth } = require('./src/runtime/hourly-lifecycle-health');
-const { hourlyFallbackDecision, fallbackForecast } = require('./src/runtime/hourly-fallback');
+const { hourlyFallbackDecision } = require('./src/runtime/hourly-fallback');
 const { createDeferredJobHealth } = require('./src/runtime/deferred-job-health');
 const { createProcessRecovery } = require('./src/runtime/process-recovery');
 const { createProcessResourceMonitor } = require('./src/runtime/process-resources');
-const { captureMemoryPersistence, diffMemoryPersistence } = require('./src/runtime/memory-delta');
-const { createMemoryMaintenance } = require('./src/runtime/memory-maintenance');
 const { createWriteThroughQueue } = require('./src/runtime/write-through-queue');
 const { createRecurringJobRegistry, quarantineMessage } = require('./src/runtime/recurring-jobs');
 const { createAdaptiveWorkerLoop } = require('./src/runtime/adaptive-worker-loop');
@@ -110,8 +101,6 @@ const { captureMarkerPersistence, diffMarkerPersistence } = require('./src/runti
 const { captureTaskPersistence, diffTaskPersistence } = require('./src/runtime/task-delta');
 const { captureSlackThreadPersistence, diffSlackThreadPersistence } =
   require('./src/runtime/slack-thread-delta');
-const { captureDreamPersistence, diffDreamPersistence } = require('./src/runtime/dream-delta');
-const { planTranscriptEpisodeBatch } = require('./src/runtime/transcript-episode-batch');
 const app = express();
 const server = http.createServer(app);
 // Bound incomplete inbound requests at the socket layer as well as completed Express handlers.
@@ -126,15 +115,9 @@ const websocketLiveness = createWebSocketLivenessMonitor();
 const voiceResponseWatchdog = createResponseWatchdogMonitor();
 const processResources = createProcessResourceMonitor();
 const LOCAL_DATA_DIR = process.env.NORA_DATA_DIR ? path.resolve(process.env.NORA_DATA_DIR) : __dirname;
+const PROCESS_EPOCH_ID = crypto.randomUUID();
 const DRIVE_ARTIFACT_UPLOADS_PATH = path.join(LOCAL_DATA_DIR, 'drive-artifact-uploads.json');
 const OPERATIONAL_DEFAULTS = Object.freeze({
-  memory: {
-    salience: { hot: 0.8, manual: 0.7, learning: 0.6, meeting: 0.4, system: 0.2,
-      default: 0.3 },
-    retrieval: { salience_weight: 0.15, emotional_weight: 0.08, social_weight: 0.08,
-      recall_weight: 0.012, recall_cap: 10 },
-  },
-  expectation: { surprising_memory_salience_floor: 0.6 },
   voice: { active_window_ms: 45000, spoke_grace_ms: 15000, response_stale_ms: 20000,
     solo_speaker_max: 1 },
 });
@@ -143,8 +126,8 @@ function currentOperationalDefaults() {
   return OPERATIONAL_DEFAULTS;
 }
 
-const intelligence = createIntelligenceStore({
-  filePath: path.join(LOCAL_DATA_DIR, 'nora-intelligence.json'),
+const operationStore = createOperationStore({
+  filePath: path.join(LOCAL_DATA_DIR, 'nora-operations.json'),
   db,
   isDbReady: () => _dbReady,
 });
@@ -160,7 +143,6 @@ let _dbReady = false;
 const _cache = {};   // entity → in-memory copy backing sync reads
 let _persistedTaskState = new Map();
 let _persistedSlackThreadState = new Map();
-let _persistedDreamState = new Map();
 const _writeThroughQueue = createWriteThroughQueue({
   onError: (entity, error) => console.error(`❌ db write-through [${entity}]:`, error.message),
 });
@@ -174,7 +156,7 @@ function setServiceReadiness(phase, { ready = false, error = null } = {}) {
 }
 
 function serviceReadinessSnapshot() {
-  const persistence = intelligence.persistenceDiagnostics();
+  const persistence = operationStore.persistenceDiagnostics();
   const databaseRequired = Boolean(process.env.DATABASE_URL || process.env.DATABASE_PUBLIC_URL);
   const blockers = [];
   if (!_serviceReadiness.ready) blockers.push(_serviceReadiness.phase || 'startup_incomplete');
@@ -189,38 +171,6 @@ function serviceReadinessSnapshot() {
     }, error: _serviceReadiness.error };
 }
 
-// ── Somatic nerves ───────────────────────────────────────────────────────────
-// Raw sensation for her interoception (the somatic channel, computed further down): every
-// console.error/warn anywhere in the process registers as a nociceptor firing, and a 1s timer
-// measures event-loop lag (her literal sluggishness). Pure instrumentation; original logging
-// behavior is untouched.
-const _somaProcessEpochId = crypto.randomUUID();
-const _somaNerves = { errors: [], warns: [], loopLagMax: 0, runtimeReady: false };
-let _somaLoopLagLast = Date.now();
-let _somaLoopTimer = null;
-function sampleSomaLoopLag(now = Date.now()) {
-  const lag = now - _somaLoopLagLast - 1000;
-  _somaLoopLagLast = now;
-  if (_somaNerves.runtimeReady && lag > _somaNerves.loopLagMax) {
-    _somaNerves.loopLagMax = lag;
-  }
-  return lag;
-}
-function beginSomaRuntimeSampling(now = Date.now()) {
-  // Hydrating Nora's retained state happens before the server accepts traffic. Counting that
-  // one-time boot work as live event-loop pain made a healthy restart look sluggish for several
-  // runs and could unnecessarily suppress dreams or other bounded background maintenance.
-  _somaNerves.loopLagMax = 0;
-  _somaLoopLagLast = now;
-  _somaNerves.runtimeReady = true;
-}
-{
-  const origErr = console.error.bind(console), origWarn = console.warn.bind(console);
-  console.error = (...a) => { _somaNerves.errors.push(Date.now()); if (_somaNerves.errors.length > 600) _somaNerves.errors.splice(0, 300); origErr(...a); };
-  console.warn = (...a) => { _somaNerves.warns.push(Date.now()); if (_somaNerves.warns.length > 600) _somaNerves.warns.splice(0, 300); origWarn(...a); };
-  _somaLoopTimer = setInterval(sampleSomaLoopLag, 1000);
-  _somaLoopTimer.unref?.();
-}
 function _writeThrough(entity, fn, options = {}) {
   return _writeThroughQueue.enqueue(entity, fn, options);
 }
@@ -248,9 +198,8 @@ app.get('/health', (_req, res) => {
 app.get('/runtime/performance', requireAuth, (req, res) => {
   const snapshot = {
     requests: requestPerformance.snapshot(),
-    intelligence_lifecycle: intelligence.lifecyclePerformanceSnapshot(),
-    persistence: intelligence.persistenceDiagnostics(),
-    interactive_responsiveness: intelligence.interactivePerformanceSnapshot(),
+    operation_lifecycle: operationStore.lifecyclePerformanceSnapshot(),
+    persistence: operationStore.persistenceDiagnostics(),
     interactive_priority: interactivePerformance.prioritySnapshot(),
     background_work: backgroundWorkSnapshot(),
     deferred_jobs: {
@@ -259,13 +208,13 @@ app.get('/runtime/performance', requireAuth, (req, res) => {
       loop: _jobWorkerLoop?.snapshot() || null,
     },
     process_health: _processRecovery.snapshot(),
-    hourly_lifecycle: hourlyLifecycleHealth(intelligence.list('cycles')),
+    hourly_lifecycle: hourlyLifecycleHealth(operationStore.list('cycles')),
     hourly_fallback: {
       in_flight: _hourlyFallbackInFlight,
       last: _hourlyFallbackLast,
       decision: hourlyFallbackDecision({
-        cycles: intelligence.list('cycles'),
-        primaryHealth: hourlyLifecycleHealth(intelligence.list('cycles')),
+        cycles: operationStore.list('cycles'),
+        primaryHealth: hourlyLifecycleHealth(operationStore.list('cycles')),
         lock: (() => { const lock = loadDurableRunLock(); return {
           locked: Boolean(lock && Number(lock.expires_at) > Date.now()),
           holder: lock?.holder || null,
@@ -291,30 +240,10 @@ const RECALL_BASE = `https://${process.env.RECALL_REGION}.recall.ai/api/v1`;
 // Load prompt from file
 const PROMPT_PATH = path.join(__dirname, 'nora-prompt.md');
 const VOLUME_DIR = '/data';
-const MEMORY_PATH_VOLUME = path.join(VOLUME_DIR, 'nora-memory.json');
-const MEMORY_PATH_LOCAL = path.join(LOCAL_DATA_DIR, 'nora-memory.json');
 const TASKS_PATH_VOLUME = path.join(VOLUME_DIR, 'nora-tasks.json');
 const TASKS_PATH_LOCAL = path.join(LOCAL_DATA_DIR, 'nora-tasks.json');
 const PROJECTS_PATH_VOLUME = path.join(VOLUME_DIR, 'nora-projects.json');
 const PROJECTS_PATH_LOCAL = path.join(LOCAL_DATA_DIR, 'nora-projects.json');
-
-// Use Railway volume if available, fall back to local file for dev
-function getMemoryPath() {
-  if (fs.existsSync(VOLUME_DIR)) return MEMORY_PATH_VOLUME;
-  return MEMORY_PATH_LOCAL;
-}
-
-// Seed volume with local memory file on first run
-function initMemory() {
-  const memPath = getMemoryPath();
-  if (memPath === MEMORY_PATH_VOLUME && !fs.existsSync(MEMORY_PATH_VOLUME)) {
-    try {
-      const seed = fs.readFileSync(MEMORY_PATH_LOCAL, 'utf8');
-      fs.writeFileSync(MEMORY_PATH_VOLUME, seed);
-      console.log('🧠 Seeded memory to volume');
-    } catch { /* no seed file, start fresh */ }
-  }
-}
 
 function loadPrompt() {
   // Her persona is a living platform document (app_state 'persona'), evolvable by her with
@@ -323,153 +252,8 @@ function loadPrompt() {
   return fs.readFileSync(PROMPT_PATH, 'utf8');
 }
 
-function loadMemory() {
-  if (_dbReady) return _cache.memory || [];
-  try {
-    return JSON.parse(fs.readFileSync(getMemoryPath(), 'utf8'));
-  } catch { return []; }
-}
-
-// Atomic write: write to a temp file then rename. rename() is atomic on the same
-// filesystem, so a reader can never observe a half-written file (which, under the old
-// direct writeFileSync, could corrupt memory if a read raced a large write). In DB mode
-// the whole set is upserted transactionally (equally atomic) and the JSON path is skipped.
-function saveMemory(memory, delta = null) {
-  if (_dbReady) {
-    _cache.memory = memory;
-    if (delta && !delta.upserts.length && !delta.deleted_ids.length) return Promise.resolve();
-    return _writeThrough('memory', () => delta
-      ? db.applyMemoryChanges(delta) : db.replaceAllMemory(memory));
-  }
-  const p = getMemoryPath();
-  const tmp = `${p}.tmp-${process.pid}`;
-  fs.writeFileSync(tmp, JSON.stringify(memory, null, 2));
-  fs.renameSync(tmp, p);
-}
-
-// Generate a stable id for a memory entry. Used so memory can be deleted/updated BY ID
-// rather than by array index — index-based mutation is unsafe when the array shifts
-// between a caller's read and its write (overlapping cowork runs, the dream's batch
-// deletes), which was corrupting memory (wrong rows deleted, lost markers → re-filed
-// transcripts). Ids are immune to shift.
-function newMemoryId() {
-  return `m-${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`;
-}
-
-// Salience at encoding (the amygdala's job): how strongly a memory writes depends on what it
-// carries. Emotionally/operationally charged events (upset client, slipped deadline, a
-// correction) encode hot; explicit "remember this" from a human encodes warm; routine
-// extraction encodes cool. Salience boosts retrieval and protects against forgetting; the
-// dream prunes cold, never-recalled memories first.
-const SALIENCE_HOT = /\b(upset|angry|furious|frustrat|threat|escalat|churn|cancel|walk(ing)? away|fired|urgent|emergency|crisis|breach|outage|down|broke|broken|slipped|missed (the )?deadline|overdue|over budget|blew|refund|complain|apolog|lawsuit|legal)\b/i;
-function computeSalienceForFact(fact, source) {
-  const salience = currentOperationalDefaults().memory.salience;
-  const f = String(fact || '');
-  if (SALIENCE_HOT.test(f)) return salience.hot;
-  if (source === 'manual') return salience.manual;        // a human explicitly said "remember this"
-  if (source === 'learning' || source === 'opinion') return salience.learning; // hard-won self-knowledge
-  if (source === 'meeting') return salience.meeting;       // witnessed live
-  if (source === 'system') return salience.system;
-  return salience.default;                                  // routine extraction
-}
-
-// Serialize ALL memory mutations through one in-process queue. Railway runs a single Node
-// instance, so a promise-chain lock fully serializes concurrent handlers: each mutation
-// reloads memory FRESH inside the lock, mutates, and saves — so no caller ever writes back
-// a stale snapshot (the bug behind extractMemory clobbering markers written during its
-// multi-second Claude await, and behind overlapping runs losing each other's writes).
-// `mutator(memory)` mutates the array in place and may return a value; that value resolves.
-let _memMutationChain = Promise.resolve();
-function mutateMemory(mutator) {
-  const run = _memMutationChain.then(async () => {
-    const memory = loadMemory();
-    // Backfill ids defensively so every entry is addressable by id.
-    for (const m of memory) {
-      if (!m.id) m.id = newMemoryId();
-      Object.assign(m, normalizeMemoryRecord(m));
-    }
-    const before = captureMemoryPersistence(memory);
-    const result = mutator(memory);
-    // Salience-tag anything new (loaded entries already carry theirs from the DB).
-    for (const m of memory) { if (m && m.salience === undefined) m.salience = computeSalienceForFact(m.fact, m.source); }
-    const delta = diffMemoryPersistence(before, memory);
-    await saveMemory(memory, delta); // awaits only changed Postgres rows (or the JSON fallback)
-    return { result, memory };
-  });
-  // Keep the chain alive even if a mutation throws, so one failure doesn't wedge the queue.
-  _memMutationChain = run.then(() => {}, () => {});
-  return run;
-}
-
-const memoryMaintenance = createMemoryMaintenance({
-  loadMemory,
-  mutateMemory,
-  loadDigest: async () => _dbReady ? db.getState('memory_digest_v1') : null,
-  saveDigest: async digest => {
-    _cache.memoryDigest = digest;
-    if (_dbReady) await db.setState('memory_digest_v1', digest);
-  },
-});
-
-// One-time backfill: assign ids to any pre-existing memory entries that lack them, so the
-// by-id endpoints work for the whole store from the first boot after this deploy.
-async function backfillMemoryIds() {
-  try {
-    const memory = loadMemory();
-    let changed = false;
-    for (const m of memory) {
-      if (!m.id) { m.id = newMemoryId(); changed = true; }
-      if (m.kind === undefined || m.confidence === undefined || m.status === undefined) {
-        Object.assign(m, normalizeMemoryRecord(m));
-        changed = true;
-      }
-    }
-    if (changed) {
-      await saveMemory(memory);
-      console.log(`🧠 Upgraded ${memory.length} memories to the current schema`);
-    }
-  } catch (err) { console.warn('Memory id backfill failed (non-fatal):', err.message); }
-}
-
 // ── Operational markers ──────────────────────────────────────────────────────
-// Idempotency bookkeeping the cowork loop uses to avoid repeating work ("did I already
-// file transcript X / dream today / send warmth to Y this week"). These are NOT knowledge —
-// they don't belong in /memory, where they (a) bloated the store to thousands of entries and
-// (b) got injected into Nora's live prompt as noise ("Filed transcript abc123..."). They now
-// live in a separate key→value store (/markers). These shared patterns map a legacy marker-
-// shaped memory fact to its canonical marker key — used by both the migration (move them out
-// of /memory) and buildSystemPrompt (filter any stragglers out of the prompt).
-const MARKER_PATTERNS = [
-  { re: /^Dreamed on (\d{4}-\d{2}-\d{2})/i,                 key: m => `dreamed:${m[1]}` },
-  { re: /^Ran full memory dedup on (\d{4}-\d{2}-\d{2})/i,   key: m => `memory-dedup:${m[1]}` },
-  { re: /^Ran reflection round on (\d{4}-\d{2}-\d{2})/i,    key: m => `reflection-done:${m[1]}` },
-  { re: /^Flagged stale tasks on (\d{4}-\d{2}-\d{2})/i,     key: m => `stale-tasks-flagged:${m[1]}` },
-  { re: /^Filed transcript (\S+)\b/i,                       key: m => `filed-transcript:${m[1]}` },
-  { re: /^Skipped filing transcript (\S+)/i,                key: m => `skipped-transcript:${m[1]}` },
-  { re: /^Filed HubSpot note for transcript (\S+)/i,        key: m => `hubspot-note:${m[1]}` },
-  { re: /^Sent warmth to (.+?) on (\d{4}-\d{2}-\d{2})/i,    key: m => `warmth:${m[1].trim().toLowerCase()}:${m[2]}` },
-  { re: /^Responded to Slack msg \[?([\d.]+)\]?/i,          key: m => `slack-responded:${m[1]}` },
-  { re: /^Completed Teamwork task #(\d+)/i,                 key: m => `task-completed:${m[1]}` },
-  { re: /^Bootstrapped ([a-z0-9-]+)/i,                      key: m => `bootstrap:${m[1].toLowerCase()}` },
-];
-// Returns the canonical marker key for a memory fact, or null if it isn't a marker.
-// Never matches opinion/learning/real-knowledge text — the patterns are operational-log shapes.
-function markerKeyForFact(fact) {
-  for (const p of MARKER_PATTERNS) {
-    const mm = (fact || '').match(p.re);
-    if (mm) return p.key(mm);
-  }
-  return null;
-}
-
-const { rankLexicalMemories, retrieveInteractiveMemories } = createInteractiveMemoryRecall({
-  loadMemory,
-  isDbReady: () => _dbReady,
-  writeThrough: _writeThrough,
-  db,
-  markerKeyForFact,
-});
-
+// Exact idempotency state used to prevent duplicate provider writes.
 const MARKERS_PATH_VOLUME = path.join(VOLUME_DIR, 'nora-markers.json');
 const MARKERS_PATH_LOCAL = path.join(LOCAL_DATA_DIR, 'nora-markers.json');
 function getMarkersPath() {
@@ -492,7 +276,7 @@ function saveMarkersFile(markers, delta = null) {
   fs.writeFileSync(tmp, JSON.stringify(markers, null, 2));
   fs.renameSync(tmp, p);
 }
-// Serialize marker mutations through their own in-process lock (same pattern as memory).
+// Serialize marker mutations through their own in-process lock.
 // markers is a plain { key: {set_at, ...data} } object; mutator mutates it in place.
 let _markerMutationChain = Promise.resolve();
 function mutateMarkers(mutator) {
@@ -513,7 +297,7 @@ function mutateMarkers(mutator) {
 // conversation would otherwise race on that shared array: the second reads history before the first's
 // reply is appended (re-creating the "lost my own reply" amnesia and a false first-contact), and the
 // interleaved push/pop/splice corrupt turn order. A per-key promise chain serializes same-conversation
-// turns while letting unrelated conversations run concurrently. (Memory/markers/tasks use the same
+// turns while letting unrelated conversations run concurrently. Markers and tasks use the same
 // pattern globally; Slack needs it per-key so one busy channel doesn't block every other.)
 const _slackSessionChains = new Map();
 function withSlackSessionLock(key, fn) {
@@ -526,7 +310,7 @@ function withSlackSessionLock(key, fn) {
   return run;
 }
 
-// Task queue — same pattern as memory
+// Task queue
 function getTasksPath() {
   if (fs.existsSync(VOLUME_DIR)) return TASKS_PATH_VOLUME;
   return TASKS_PATH_LOCAL;
@@ -552,7 +336,7 @@ function saveTasks(tasks) {
   fs.writeFileSync(getTasksPath(), JSON.stringify(tasks, null, 2));
 }
 
-// Projects — same pattern as memory/tasks
+// Projects
 function getProjectsPath() {
   if (fs.existsSync(VOLUME_DIR)) return PROJECTS_PATH_VOLUME;
   return PROJECTS_PATH_LOCAL;
@@ -603,7 +387,7 @@ function clearCalendarState() {
 
 // Ensure a project record exists for a given name. Creates a stub if missing.
 // Returns the canonical project name (existing record wins on case mismatch) so callers
-// can normalize memory entries against the canonical casing.
+// can normalize project references against the canonical casing.
 function ensureProject(name) {
   if (!name || !name.trim()) return '';
   const trimmed = name.trim();
@@ -619,7 +403,7 @@ function ensureProject(name) {
   };
   projects.push(project);
   persistProject(projects, project);
-  console.log('📁 Project auto-created from memory scoping:', trimmed);
+  console.log('📁 Project record auto-created:', trimmed);
   return trimmed;
 }
 
@@ -821,23 +605,6 @@ function addTask(task) {
     last_run: task.last_run || null
   });
   saveTasks(tasks);
-  const episodeCorrelation = task.source_bot_id ? `meeting:${task.source_bot_id}`
-    : task.source_channel ? `slack:${task.source_channel.replace(/^slack:/, '')}:${task.source_thread_ts || 'channel'}`
-      : `task:${id}`;
-  const taskEpisode = intelligence.recordEpisodeEvent({
-    correlation: episodeCorrelation, title: task.source_bot_id ? 'Meeting follow-up' : 'Task follow-up',
-    channel: 'task', kind: 'commitment_created', actor: task.assignee || 'Nora', text: task.action,
-    source_ref: { channel: task.source_channel || (task.source_bot_id ? 'meeting' : 'task'), id: task.source_external_id || task.source_thread_ts || task.source_bot_id || id, captured_at: new Date().toISOString() },
-  });
-  if (!task.assignee || /nora/i.test(task.assignee)) {
-    const commitment = intelligence.addCommitment({
-      what: task.action, owner: task.assignee || 'Nora', due: task.due || task.scheduled_for,
-      notes: task.detail || '', task_id: id, episode_id: taskEpisode.id,
-      evidence: task.source_channel ? { channel: task.source_channel, id: task.source_external_id || task.source_thread_ts || task.source_bot_id || null, captured_at: new Date().toISOString() } : null,
-    });
-    if (sourceAttestation) intelligence.recordVerifiedExternalSourceAttestation(commitment.id, sourceAttestation);
-    intelligence.recordEpisodeEvent({ correlation: episodeCorrelation, record_event: false, commitment_ids: [commitment.id], status: 'open' });
-  }
   const sched = task.scheduled_for ? ` (scheduled ${task.scheduled_for})` : '';
   const recur = task.recurrence ? ` [${task.recurrence}]` : '';
   console.log('📋 Task added:', id, task.action + sched + recur);
@@ -860,12 +627,9 @@ const { SCHEDULE_TZ, computeNextRun, isValidRecurrence, isTaskEligibleNow } = re
 async function migrateFromVolumeIfNeeded() {
   if (await db.getState('migration_v1_done')) return; // already fully migrated; PG is authoritative
   console.log('🗄️  Migrating JSON volume → Postgres (authoritative seed)…');
-  const mem = loadMemory(); for (const x of mem) if (!x.id) x.id = newMemoryId();
-  await db.replaceAllMemory(mem);
   await db.replaceAllTasks(loadTasks());
   await db.replaceAllProjects(loadProjects());
   await db.replaceAllMarkers(loadMarkers());
-  await db.replaceAllDreams(loadDreams());
   await db.replaceAllMcp(loadMcpStore());
   await db.replaceAllSlackThreads(loadSlackThreads());
   const cal = loadCalendarState(); if (cal) await db.setState('calendar', cal);
@@ -896,58 +660,6 @@ async function migrateTranscriptsIfNeeded() {
   await db.setState('migration_transcripts_done', { v: 1, count: n });
   console.log(`🗄️  Migrated ${n} transcripts from JSON → Postgres`);
 }
-let _embedTimer = null;
-function startEmbeddingBackfiller() {
-  if (_embedTimer) return;
-  const tick = async ({ signal } = {}) => {
-    if (!_dbReady || (typeof db.backgroundAllowed === 'function' && !db.backgroundAllowed())) return;
-    // Embedding new memories is useful, but it is never more important than a human waiting on
-    // Slack or talking to Nora in a meeting. Share the same single background-provider lane as
-    // reflection/research, and pass its abort signal to fetch so live work can stop an in-flight
-    // embedding instead of merely waiting for its private timeout.
-    const priorityLease = beginOptionalBackground('memory-embedding-backfill');
-    if (!priorityLease.allowed) return;
-    try {
-      const combinedSignal = signal
-        ? AbortSignal.any([priorityLease.signal, signal]) : priorityLease.signal;
-      if (combinedSignal.aborted) return;
-      const need = await db.memoryNeedingEmbedding(16);
-      let filled = 0;
-      for (const row of need) {
-        if (combinedSignal.aborted) break;
-        const vec = await db.embed(row.fact, { signal: combinedSignal });
-        if (combinedSignal.aborted) break;
-        if (vec) { await db.setMemoryEmbedding(row.id, vec); filled++; }
-      }
-      if (filled) console.log(`🧠 Embedded ${filled} memory rows for semantic recall`);
-    } catch (e) { console.warn('embed backfill:', e.message); }
-    finally { priorityLease.release(); }
-  };
-  _embedTimer = scheduleRecurringRuntimeJob('memory-embedding-backfill', 20000, tick, {
-    initialDelayMs: 4000,
-    timeoutMs: 15000,
-  });
-}
-
-// Scheduled re-vectorization. Embeddings never drift on their own (the backfiller re-embeds
-// new/edited/failed rows continuously), so the only thing that warrants re-embedding UNCHANGED
-// text is a change of embedding model. This records which model produced the current embeddings
-// in app_state and, when EMBED_MODEL differs, clears every embedding so the backfiller re-computes
-// them with the new model. Runs on boot and daily. First-ever run just adopts the current model
-// WITHOUT wiping (the existing embeddings are already this model), so enabling this never triggers
-// a needless full re-embed.
-async function reembedIfModelChanged() {
-  if (!_dbReady || (typeof db.backgroundAllowed === 'function' && !db.backgroundAllowed())) return;
-  try {
-    const stored = await db.getState('embed_model');
-    if (!stored) { await db.setState('embed_model', db.EMBED_MODEL); return; }
-    if (stored === db.EMBED_MODEL) return;
-    const n = await db.clearEmbeddings();
-    await db.setState('embed_model', db.EMBED_MODEL);
-    console.log(`🧠 Embedding model changed (${stored} → ${db.EMBED_MODEL}); cleared ${n} embeddings — backfiller will re-vectorize`);
-  } catch (e) { console.warn('reembedIfModelChanged failed:', e.message); }
-}
-
 async function initPersistence() {
   if (!db.dbEnabled()) { console.log('🗄️  DATABASE_URL not set — using JSON files on the volume'); return; }
   try {
@@ -972,24 +684,16 @@ async function initPersistence() {
         console.log(`🗄️  Seeded persona from nora-prompt.md (${seed.length} chars)`);
       } catch (e) { console.warn('persona seed failed:', e.message); }
     }
-    if (!(await db.getState('predictions'))) await db.setState('predictions', { items: [] });
-    if (!(await db.getState('people'))) await db.setState('people', { items: [] });
-
     // Hydrate every in-memory cache from Postgres (now the source of truth).
-    _cache.memory = await db.loadAllMemory();
     _cache.tasks = await db.loadAllTasks();
     _persistedTaskState = captureTaskPersistence(_cache.tasks);
     _cache.projects = await db.loadAllProjects();
     _cache.markers = await db.loadAllMarkers();
-    _cache.dreams = await db.loadAllDreams();
-    _persistedDreamState = captureDreamPersistence(_cache.dreams);
     _cache.mcp = await db.loadAllMcp();
     _cache.calendar = await db.getState('calendar');
     _cache.driveArtifactUploads = driveArtifactUpload.normalizeLedger(
       await db.getState('drive_artifact_uploads'));
     _cache.persona = await db.getState('persona');
-    _cache.predictions = await db.getState('predictions');
-    _cache.people = await db.getState('people');
     _cache.runLock = await db.getState('run_lock');
     slackJoinedThreads = await db.loadAllSlackThreads();
     _persistedSlackThreadState = captureSlackThreadPersistence(slackJoinedThreads);
@@ -999,13 +703,7 @@ async function initPersistence() {
     Object.assign(sessionTokens, tok);
 
     _dbReady = true;
-    console.log(`🗄️  Postgres ready — memory:${_cache.memory.length} tasks:${_cache.tasks.length} projects:${_cache.projects.length} markers:${Object.keys(_cache.markers).length} dreams:${_cache.dreams.length} mcp:${_cache.mcp.length} threads:${Object.keys(slackJoinedThreads).length} tokens:${Object.keys(sessionTokens).length}`);
-    startEmbeddingBackfiller();
-    // Re-vectorize on model change: once now, then daily (EMBED_MODEL only changes on deploy, so
-    // the boot check is the load-bearing one; the daily timer is a cheap safety net).
-    await reembedIfModelChanged();
-  scheduleRecurringRuntimeJob('embedding-model-check', 24 * 60 * 60 * 1000,
-      reembedIfModelChanged, { timeoutMs: 60000 });
+    console.log(`🗄️  Postgres ready — tasks:${_cache.tasks.length} projects:${_cache.projects.length} markers:${Object.keys(_cache.markers).length} mcp:${_cache.mcp.length} threads:${Object.keys(slackJoinedThreads).length} tokens:${Object.keys(sessionTokens).length}`);
   } catch (e) {
     console.error('❌ Postgres init failed. Error:', e.message);
     _dbReady = false;
@@ -1087,97 +785,6 @@ function buildDummyPrompt(customPrompt, agentName = 'Nora (Test)') {
   return intro + realtimeVoiceGuidance(agentName);
 }
 
-// ── Mood engine ─────────────────────────────────────────────────────────────
-// Humans have state; bots have settings. Nora's mood is computed from REAL signals, never
-// performed: time and day (Friday wrap-up energy is real), how her own recent replies actually
-// landed (from the interaction outcomes her nightly dream reviews: a corrected reply makes a
-// person more careful the next day, a run of flags that got acted on makes them sharper), plus
-// a small date-seeded tint so she has slightly off or slightly great days for no reason, the way
-// people do. Seeded means it is STABLE for the whole day (a mood, not a mood ring) and costs no
-// randomness at judgment time. Injected as one line in the [Right now] block; tone only, it
-// never changes facts, numbers, or any security rule.
-function _dailySeed(str) {
-  let h = 2166136261;
-  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
-  return h >>> 0;
-}
-// ── Somatic channel (interoception) ─────────────────────────────────────────
-// Her felt sense of her own substrate: real vitals distilled into low-resolution body
-// language, the way interoception gives humans "sluggish" or "off" without a diagnostic
-// readout. Pure code, no LLM (it belongs to her unconscious). Computed every 60s into
-// _soma; injected into the volatile prompt tail next to the mood; surfaced in GET /self.
-// The mood engine owns her PSYCHOLOGICAL state (clock, outcomes); this owns the PHYSICAL.
-let _soma = { feel: '', score: 0, vitals: {
-  errors10: 0, warns10: 0, loopLag: 0, uptimeMin: 0, onBackup: false,
-  memCount: 0, embedBacklog: 0, processEpochId: _somaProcessEpochId,
-}, updated_at: null };
-let _somaComputeInFlight = false;
-async function computeSoma() {
-  if (_somaComputeInFlight) return;
-  _somaComputeInFlight = true;
-  try {
-    const now = Date.now();
-    const tenMin = now - 10 * 60 * 1000;
-    const errors10 = _somaNerves.errors.filter(t => t >= tenMin).length;
-    const warns10 = _somaNerves.warns.filter(t => t >= tenMin).length;
-    const loopLag = _somaNerves.loopLagMax;
-    _somaNerves.loopLagMax = Math.floor(_somaNerves.loopLagMax / 2); // decay: pain fades
-    const uptimeMin = Math.floor(process.uptime() / 60);
-    const onBackup = db.dbEnabled() && !_dbReady; // running on the JSON fallback organs
-    const memCount = (_dbReady && _cache.memory) ? _cache.memory.length : 0;
-    let embedBacklog = 0;
-    if (_dbReady) {
-      try { const s = await db.embeddingStats(); embedBacklog = Math.max(0, (s.total || 0) - (s.embedded || 0)); } catch {}
-    }
-
-    // Score the sensations (0 = clear, higher = worse), each with a body-word.
-    const feels = [];
-    let score = 0;
-    if (onBackup) { score += 3; feels.push('fragile, running on backup systems'); }
-    if (errors10 >= 6) { score += 2; feels.push('off-balance, things keep going wrong'); }
-    else if (errors10 >= 1) { score += 1; feels.push('a small recurring ache'); }
-    if (loopLag > 1500) { score += 2; feels.push('badly sluggish'); }
-    else if (loopLag > 300) { score += 1; feels.push('a little sluggish'); }
-    if (embedBacklog > 120) { score += 1; feels.push('foggy, recent memories not settled yet'); }
-    if (memCount > 2800) { score += 1; feels.push('heavy, memory overdue for a tidy'); }
-    if (uptimeMin < 20) { score += 1; feels.push('just woke up from a restart, still finding footing'); }
-    if (warns10 >= 12 && errors10 < 1) { score += 1; feels.push('vaguely irritated by background noise'); }
-
-    let feel;
-    if (score === 0) feel = 'clear-headed, everything running smooth';
-    else if (score === 1) feel = feels[0];
-    else if (score <= 3) feel = 'somewhat off today: ' + feels.slice(0, 2).join('; ');
-    else feel = 'in genuinely rough shape: ' + feels.slice(0, 3).join('; ');
-
-    _soma = { feel, score, vitals: { errors10, warns10, loopLag, uptimeMin, onBackup,
-      memCount, embedBacklog, processEpochId: _somaProcessEpochId }, updated_at: new Date().toISOString() };
-  } catch (e) { /* interoception failing must never hurt the body it senses */ }
-  finally { _somaComputeInFlight = false; }
-}
-
-function computeNoraMood(appraisalOverride = undefined) {
-  try {
-    const ct = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' }));
-    const day = ct.getDay(), hour = ct.getHours();
-    const parts = [];
-
-    // Baseline energy from the clock (real, everyone has this). TONE WORDS ONLY: no work nouns
-    // (scope, timelines, queues) in these strings, because she has parroted this note's
-    // vocabulary back in conversation ("my patience for new scope is around zero" to a message
-    // that never mentioned scope). Mood must be contentless.
-    if (day === 5 && hour >= 13) parts.push('Friday afternoon, ready to be done for the week');
-    else if (day === 1 && hour < 11) parts.push('Monday morning, still spinning up');
-    else if (hour < 9) parts.push('early, coffee still kicking in');
-    else if (hour >= 16) parts.push('late in the day, a little worn down');
-
-    // Affect comes from evidence-backed appraisal with inertia, never a random personality tint.
-    const appraisal = appraisalOverride === undefined ? intelligence.affectContext() : appraisalOverride;
-    if (appraisal?.label) parts.push(appraisal.label);
-
-    return parts.join('; ');
-  } catch { return ''; }
-}
-
 // Calendar-day index for a date AS OBSERVED in Central time (days since epoch). Comparing these
 // gives a true calendar-day delta that doesn't wobble near midnight the way a raw-ms diff would.
 function ctDayNumber(date) {
@@ -1202,10 +809,7 @@ function runtimeSituationalCapabilities({ surface, direct, financialApproved, mc
   const unavailableForTurn = toolsAttached ? [] : ['live tools omitted for this bounded social turn'];
   const capabilities = [
     // Present on every turn including a bounded social one, and factually true: she is answering
-    // from stored memory and the conversation in front of her. Without it a bounded turn produced
-    // a frame whose every entry was unavailable, which the receipt validator correctly rejects for
-    // failing to represent any present capability, so the frame silently never reached the prompt.
-    { key: 'conversational_reply', family: 'conversation', label: 'Reply from stored memory and the current conversation', access_mode: 'read', availability: 'available', authority_scope: 'this conversation and Nora\'s own stored memory', constraints: ['memory may be stale or incomplete and is not a live system of record'] },
+    { key: 'conversational_reply', family: 'conversation', label: 'Reply from the current conversation', access_mode: 'read', availability: 'available', authority_scope: 'this conversation only', constraints: [] },
     { key: 'web_search', family: 'web', label: 'Live web search', access_mode: 'read', availability: toolsAttached && direct ? 'available' : 'unavailable', authority_scope: 'public information retrieval only', constraints: toolsAttached ? (direct ? [] : ['disabled outside direct turns']) : unavailableForTurn },
     { key: 'teamwork_read', family: 'project_management', label: 'Teamwork project and task lookup', access_mode: 'read', availability: toolsAttached && teamwork ? 'available' : 'unavailable', authority_scope: 'connected Teamwork workspace', constraints: !toolsAttached ? unavailableForTurn : teamwork ? [] : ['Teamwork is not configured'] },
     { key: 'teamwork_write', family: 'project_management', label: 'Teamwork task changes', access_mode: 'write', availability: toolsAttached && teamwork && direct ? 'conditional' : 'unavailable', requires_explicit_request: true, authority_scope: 'only explicit unambiguous changes within delegated authority', constraints: !toolsAttached ? unavailableForTurn : teamwork && direct ? ['cannot delete tasks'] : ['disabled on this interaction context'] },
@@ -1240,29 +844,15 @@ function recordRuntimeSituationalAffordance({ surface, contextKind, direct, fina
   requester, interactionRef, mcp = null, toolsAttached = true }) {
   const capabilities = runtimeSituationalCapabilities({ surface, direct, financialApproved, mcp,
     toolsAttached });
-  const inventoryCommitment = crypto.createHash('sha256').update(JSON.stringify(capabilities)).digest('hex');
-  try {
-    return intelligence.recordSituationalAffordanceFrame({ surface, context_kind: contextKind,
-      context_key: `${surface}:${contextKind}:${requester || 'unknown'}:${financialApproved ? 'financial-approved' : 'financial-restricted'}`,
-      capabilities,
-      constraints: ['Tool availability never expands delegated authority', 'A tool return is not proof of downstream success', 'Privacy, financial, disclosure, and approval gates remain active'],
-      evidence: [{ type: 'runtime_policy', id: 'server-affordance-schema-88' }, { type: 'tool_inventory_commitment', id: inventoryCommitment }],
-      interaction_ref: interactionRef || null });
-  } catch (error) {
-    console.warn(`situational affordance receipt failed for ${surface}/${contextKind}: ${error.message}`);
-    return null;
-  }
+  return { surface, context_kind: contextKind, requester: requester || null,
+    interaction_ref: interactionRef || null, capabilities,
+    constraints: ['Tool availability never expands delegated authority',
+      'A tool return is not proof of downstream success'] };
 }
 
 // First-delivery telemetry for every surface; see src/surfaces/interactive-latency.js.
 const recordInteractiveResponseLatency = createInteractiveLatencyRecorder({
-  recordTrace: traceInput => intelligence.recordTrace(traceInput) });
-
-const RECENT_ACTIVITY_BUDGET_CHARS = 1500;
-const RECENT_ACTIVITY_MAX_PER_DAY = 12;
-const HOUSEKEEPING_ACTIVITY_PREFIXES = Object.freeze([
-  'dreamed:', 'memory-dedup:', 'stale-tasks-flagged:', 'bootstrap:', 'skipped-transcript:',
-]);
+  recordTrace: traceInput => traceInput });
 
 
 // Nora's editable persona is the canonical source, but several long sections repeat the
@@ -1295,68 +885,6 @@ function compileInteractivePersona(content) {
   const compiled = kept.join('').trim();
   if (compiled.length === source.length) return source;
   return `${compiled}\n\n[Interactive persona compilation]\nOnly source sections duplicated by the final-position live channel policy were omitted from this latency-critical copy. The editable persona remains canonical.`;
-}
-
-function markerActivityLine(key, marker) {
-  if (HOUSEKEEPING_ACTIVITY_PREFIXES.some(prefix => key.startsWith(prefix))) return null;
-  if (marker && typeof marker.note === 'string' && marker.note.trim()) return marker.note.trim();
-  if (key.startsWith('filed-transcript:')) return `Filed a meeting transcript${marker?.client ? ` for ${marker.client}` : ''}`;
-  if (key.startsWith('warmth:')) {
-    const who = key.split(':')[1] || '';
-    return `Checked in with ${who ? who.charAt(0).toUpperCase() + who.slice(1) : 'a teammate'}`;
-  }
-  if (key.startsWith('task-completed:')) return 'Completed a task';
-  if (key.startsWith('slack-file-done:')) return 'Handled a Slack file';
-  return null;
-}
-
-function centralDateKey(value) {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/Chicago', year: 'numeric', month: '2-digit', day: '2-digit',
-  }).formatToParts(value).reduce((out, part) => ({ ...out, [part.type]: part.value }), {});
-  return `${parts.year}-${parts.month}-${parts.day}`;
-}
-
-function buildRecentActivityBlock({ markers = {}, memory = [], now = new Date(),
-  maxPerDay = RECENT_ACTIVITY_MAX_PER_DAY, maxChars = RECENT_ACTIVITY_BUDGET_CHARS } = {}) {
-  const today = centralDateKey(now);
-  const yesterday = centralDateKey(new Date(now.getTime() - 86400000));
-  const byDay = { [today]: [], [yesterday]: [] };
-  const seen = new Set();
-  const add = (day, line) => {
-    const compact = String(line || '').replace(/\s+/g, ' ').trim().slice(0, 360);
-    const key = compact.toLowerCase();
-    if (!compact || !byDay[day] || seen.has(key)) return;
-    seen.add(key);
-    byDay[day].push(compact);
-  };
-  for (const [key, marker] of Object.entries(markers || {})) {
-    const day = marker?.set_at ? String(marker.set_at).split('T')[0] : String(marker?.date || '');
-    add(day, markerActivityLine(key, marker));
-  }
-  // Only explicitly manual memories can stand in for a missing action marker. Auto-sync,
-  // meeting, and Slack memories are knowledge or conversation evidence, not things Nora did.
-  for (const item of memory || []) {
-    if (item?.source !== 'manual') continue;
-    add(String(item.added || ''), item.fact);
-  }
-  byDay[today] = byDay[today].slice(-maxPerDay);
-  byDay[yesterday] = byDay[yesterday].slice(-maxPerDay);
-  const render = () => {
-    if (!byDay[today].length && !byDay[yesterday].length) return '';
-    let block = '[What you actually did recently, from action markers]\n';
-    if (byDay[today].length) block += `\nToday (${today}):\n${byDay[today].map(line => `- ${line}`).join('\n')}`;
-    if (byDay[yesterday].length) block += `\n\nYesterday (${yesterday}):\n${byDay[yesterday].map(line => `- ${line}`).join('\n')}`;
-    block += '\n\nUse this only when someone asks what you did or what is new. Answer naturally; do not recite it.';
-    return block;
-  };
-  let block = render();
-  while (block.length > maxChars && (byDay[yesterday].length || byDay[today].length)) {
-    if (byDay[yesterday].length) byDay[yesterday].shift();
-    else byDay[today].shift();
-    block = render();
-  }
-  return block;
 }
 
 function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = null, meetingContext = null, opts = {}) {
@@ -1397,12 +925,6 @@ ${now.toLocaleString('en-US', { timeZone: 'America/Chicago', dateStyle: 'full', 
       `- ${project.name}: ${String(project.details || project.status || 'No local summary').slice(0, 800)}`).join('\n');
   }
 
-  const memories = Array.isArray(opts.semanticMemories) ? opts.semanticMemories : [];
-  if (memories.length) {
-    volatile += '\n\n[Relevant working context]\n' + memories.slice(0, 8).map(item =>
-      `- ${String(item.fact || item.text || item).slice(0, 600)}`).join('\n');
-  }
-
   if (Array.isArray(transcript) && transcript.length) {
     volatile += '\n\n[Recent meeting transcript]\n' + transcript.slice(-25).map(item =>
       `${item.speaker || 'Speaker'}: ${String(item.text || '').slice(0, 500)}`).join('\n');
@@ -1429,64 +951,8 @@ Use short paragraphs. Put the answer or completed action first. State uncertaint
   return `${stable}\n\n${volatile}`;
 }
 
-// Semantic memory recall. Given the current conversation text, retrieve the most
-// semantically-relevant memory facts via pgvector (cosine distance on OpenAI embeddings).
-// Async because it embeds the query, so callers compute it BEFORE buildSystemPrompt and pass
-// the result as opts.semanticMemories — it renders in the uncached tail, never disturbing the
-// cached prompt prefix. Excludes opinions/learnings (those have their own blocks) and any
-// straggler operational markers. Returns [] when the DB is off or no rows are embedded yet, so
-// every caller degrades cleanly to the existing keyword project-focus.
-async function retrieveSemanticMemories(queryText, limit = 8, { signal = null } = {}) {
-  if (!_dbReady || !queryText || !queryText.trim()) return [];
-  try {
-    const vec = await db.embed(queryText.slice(0, 2000), { signal });
-    if (!vec) return [];
-    // Fetch a wider band, then re-rank with memory dynamics: similarity is the base signal,
-    // salience (how hot the memory encoded) and recall history (retrieval strengthening) tip
-    // the order the way a brain's does. A charged, oft-used memory outcompetes a slightly
-    // closer piece of trivia.
-    const workingCutoff = new Date(Date.now()
-      - memoryLifecycle.DEFAULT_MEMORY_POLICY.working_days * 86400000)
-      .toISOString().slice(0, 10);
-    const [workingRows, longTermRows] = await Promise.all([
-      db.searchMemoryByVector(vec, (limit * 2) + 6, {
-        excludeSources: ['opinion', 'learning'], signal, interactive: true,
-        addedSince: workingCutoff,
-      }),
-      db.searchMemoryByVector(vec, (limit * 2) + 6, {
-        excludeSources: ['opinion', 'learning'], signal, interactive: true,
-        addedBefore: workingCutoff,
-      }),
-    ]);
-    const retrieval = currentOperationalDefaults().memory.retrieval;
-    const rankedWorking = memoryLifecycle.scoreMemoryRecallRows(workingRows
-      .filter(r => !markerKeyForFact(r.fact))
-      .map(r => normalizeMemoryRecord(r))
-      .filter(r => memoryIsActive(r)), retrieval);
-    const rankedLongTerm = memoryLifecycle.scoreMemoryRecallRows(longTermRows
-      .filter(r => !markerKeyForFact(r.fact))
-      .map(r => normalizeMemoryRecord(r))
-      .filter(r => memoryIsActive(r)), retrieval);
-    const ranked = memoryLifecycle.selectTieredRecall(
-      rankedWorking, rankedLongTerm, limit);
-    // Reconsolidation: surfacing them strengthens them. Keep the write off the reply deadline,
-    // but put it behind the drainable memory owner so bursts serialize and deploys cannot close
-    // the database underneath an untracked update.
-    const ids = ranked.map(r => r.id);
-    if (ids.length) {
-      _writeThrough('memory', () => db.bumpMemoryRecall(ids));
-      if (_cache.memory) {
-        const idSet = new Set(ids);
-        const nowIso = new Date().toISOString();
-        for (const m of _cache.memory) if (idSet.has(m.id)) { m.recall_count = (m.recall_count || 0) + 1; m.last_recalled = nowIso; }
-      }
-    }
-    return ranked;
-  } catch (e) { console.warn('semantic recall failed:', e.message); return []; }
-}
-
 // Build the Anthropic `system` field as a structured block array with prompt caching on the
-// large, stable prefix. `stable` (nora-prompt + memory + activity + tasks, ~8K tokens) is
+// large, stable operator-controlled prefix.
 // near-identical call-to-call, so caching it cuts repeat input cost ~90% on cache hits
 // (ephemeral 5-min TTL — fits Slack thread cadence + back-to-back extraction bursts). The
 // `volatile` half (timestamp, who's-talking, transcript) and any per-recipient `suffix`
@@ -1500,7 +966,7 @@ function cachedSystem(stable, tail = '') {
 }
 
 // Pick the realtime system prompt for a voice session. Dummy test sessions run on a one-off
-// custom brief (no memory/projects/tasks); everything else gets Nora's full realtime prompt.
+// custom brief; everything else gets Nora's request-driven realtime prompt.
 function realtimePromptForSession(session) {
   if (session && session.dummy) {
     return buildDummyPrompt(session.dummyPrompt, session.dummyName || 'Nora (Test)');
@@ -1526,11 +992,7 @@ function voiceMeetingContextPacket(session, { systemPrompt = '', voiceTools = []
   };
 }
 
-// Async variant that adds SEMANTIC RECALL for the voice prompt: retrieves the memory facts
-// most relevant (by meaning) to the recent spoken conversation and folds them into the
-// uncached tail. Used only at conversation-driven refresh points (a new speaker, the 5-min
-// refresh) — not at connection (no transcript yet) or on the latency-critical probe/interject
-// paths. Degrades to the plain prompt when the DB is off / embed times out (retrieve returns []).
+// Refresh only after a quiet interval so prompt updates never interrupt a live speaker.
 const REALTIME_PROMPT_SPEECH_QUIET_MS = 15000;
 
 function realtimePromptRefreshGate(session, now = Date.now()) {
@@ -1552,24 +1014,8 @@ function realtimePromptRefreshGate(session, now = Date.now()) {
   };
 }
 
-async function realtimePromptWithRecall(session, { signal: callerSignal = null } = {}) {
-  if (session && session.dummy) {
-    return buildDummyPrompt(session.dummyPrompt, session.dummyName || 'Nora (Test)');
-  }
-  // A prompt refresh supports the call; it must not compete with the spoken turn. Recall's new
-  // transcript line typically lands immediately before the realtime model needs to answer, so
-  // refresh names and local context synchronously, then wait for a quiet interval before making
-  // the optional remote embedding request.
-  if (!realtimePromptRefreshGate(session).allowed || callerSignal?.aborted) {
-    return realtimePromptForSession(session);
-  }
-  const q = (session?.transcript || []).slice(-14).map(t => t.text || '').join(' ');
-  const semanticMemories = await settleWithinAbortable(
-    signal => retrieveSemanticMemories(q, 8, {
-      signal: callerSignal ? AbortSignal.any([signal, callerSignal]) : signal,
-    }), 1200, [],
-    'realtime semantic recall');
-  return buildSystemPrompt('realtime', session?.transcript, session?.project_hint, session?.meetingMeta, { semanticMemories, trialUnitKey: session?.trialUnitKey });
+async function realtimePromptWithRecall(session) {
+  return realtimePromptForSession(session);
 }
 
 // Simple API key auth middleware — checks ?key= query param or Authorization: Bearer header.
@@ -1777,7 +1223,7 @@ app.post('/voice-agent/response', async (req, res) => {
   const session = sessions[bot_id];
 
   // Dummy test agents are stateless: they speak to rehearse scenarios but we don't persist
-  // their transcript or run memory/task extraction on what they say. Skip all of it.
+  // their transcript or process what they say. Skip all of it.
   if (session && session.dummy) return;
 
   if (session) {
@@ -1807,17 +1253,6 @@ app.post('/voice-agent/response', async (req, res) => {
       }
     }
 
-    // Build context from recent buffer
-    const meetingContext = session.buffer.slice(-10).join('\n');
-    const triggerText = session.buffer.slice(-3).join('\n'); // recent conversation that triggered the response
-
-    // Run the operational extraction pipelines.
-    if (!isAskingClarification(text)) {
-      enqueuePostInteractionExtraction('zoom-voice', async post => {
-        await extractTasks(meetingContext, triggerText, text, { channel: 'zoom', bot_id }, { post });
-        await extractMemory(meetingContext, triggerText, text, bot_id, { post });
-      });
-    }
   }
   } catch (error) {
     ownershipError = error;
@@ -2687,14 +2122,8 @@ app.post('/webhook/chat', verifyRecallRealtime, async (req, res) => {
 
     history.push({ role: 'user', content: `[${speaker} via Zoom chat]: ${query}` });
 
-    // Reuse the slack-style framing (markdown ok, concise) and pass the chat sender as the
-    // requester. Pass the recent chat as conversationText so memory loads what's relevant.
+    // Reuse the Slack-style framing and pass the chat sender as the requester.
     const zoomConv = history.slice(-6).map(m => typeof m.content === 'string' ? m.content : '').join(' ');
-    const zoomLightweightSocial = zoomConversationPolicy.lightweightSocial;
-    const zoomRecallStartedAt = Date.now();
-    const zoomSemanticMemories = zoomLightweightSocial ? []
-      : retrieveInteractiveMemories(zoomConv, 8);
-    const zoomRecallFinishedAt = Date.now();
     const zoomAttachLiveTools = zoomConversationPolicy.attachLiveTools;
     // One wall-clock budget owns prompt preparation, providers, tools, retries, and delivery.
     // No downstream stage receives a fresh timeout after an earlier stage consumed time.
@@ -2703,12 +2132,13 @@ app.post('/webhook/chat', verifyRecallRealtime, async (req, res) => {
     const zoomMcp = zoomAttachLiveTools
       ? mcpManager.bindings({ financialApproved: false, allowWrites: true })
       : { claudeTools: [], executors: {}, inventory: [], meta: {} };
+    const zoomAffordanceStartedAt = Date.now();
     const zoomAffordanceFrame = recordRuntimeSituationalAffordance({ surface: 'zoom-chat', contextKind: 'meeting', direct: true,
       financialApproved: false, requester: speaker, interactionRef: bot_id, mcp: zoomMcp,
       toolsAttached: zoomAttachLiveTools });
     const zoomAffordanceFinishedAt = Date.now();
     const { stable: zoomStable, volatile: zoomVolatile } =
-      buildSystemPrompt('slack', null, null, { source: 'zoom-chat', requester: { name: speaker } }, { cacheSplit: true, conversationText: zoomConv, semanticMemories: zoomSemanticMemories, trialUnitKey: bot_id, situationalAffordanceFrame: zoomAffordanceFrame, relationalSelfReflection: zoomConversationPolicy.relationalSelfReflection });
+      buildSystemPrompt('slack', null, null, { source: 'zoom-chat', requester: { name: speaker } }, { cacheSplit: true, conversationText: zoomConv, trialUnitKey: bot_id, situationalAffordanceFrame: zoomAffordanceFrame });
     const zoomPromptFinishedAt = Date.now();
 
     // Live tools for the in-meeting @nora chat. Typed chat is as reliable as Slack (no voice
@@ -2800,8 +2230,7 @@ app.post('/webhook/chat', verifyRecallRealtime, async (req, res) => {
       promptChars: zoomPromptChars,
       stages: {
         prepare_ms: providerStartedAt - interactionStartedAt,
-        recall_ms: zoomRecallFinishedAt - zoomRecallStartedAt,
-        affordance_ms: zoomAffordanceFinishedAt - zoomRecallFinishedAt,
+        affordance_ms: zoomAffordanceFinishedAt - zoomAffordanceStartedAt,
         prompt_ms: zoomPromptFinishedAt - zoomAffordanceFinishedAt,
         tool_setup_ms: zoomToolSetupFinishedAt - zoomToolSetupStartedAt,
         request_setup_ms: providerStartedAt - zoomToolSetupFinishedAt,
@@ -2822,19 +2251,6 @@ app.post('/webhook/chat', verifyRecallRealtime, async (req, res) => {
       }
     }
 
-    // Extract tasks/memory from chat interaction. If she already created/updated the task LIVE this
-    // turn (a Teamwork write fired), skip the task extractor so it isn't re-filed as a queued task.
-    const meetingContext = session ? session.buffer.slice(-10).join('\n') : query;
-    if (!isAskingClarification(reply)) {
-      if (wroteLiveZ) console.log('⏭️ Zoom chat: skipping task extraction (a live Teamwork write handled it)');
-      else if (zoomConversationPolicy.boundedConversation) console.log('⏭️ Zoom chat: skipping task extraction (bounded conversation lane)');
-      enqueuePostInteractionExtraction('zoom-chat', async post => {
-        if (!wroteLiveZ && !zoomConversationPolicy.boundedConversation) {
-          await extractTasks(meetingContext, query, reply, { channel: 'zoom', bot_id }, { post });
-        }
-        await extractMemory(meetingContext, query, reply, bot_id, { post });
-      });
-    }
   } catch (err) {
     chatActivityFailed = true;
     runtimeActivity.finish(chatActivity.id, { status: 'failed',
@@ -2996,13 +2412,6 @@ app.post('/webhook/status', verifyRecallDashboard, async (req, res) => {
           ended: status.updated_at, delayMs: 2000,
         });
       }
-      // These jobs own immutable meeting inputs and can proceed even when the final database
-      // checkpoint is retrying. A transient persistence incident must not also erase the debrief
-      // or the meeting's continuity extraction.
-      enqueuePostInteractionExtraction('meeting-intelligence', post =>
-        extractMeetingIntelligence(bot_id, transcriptData, session.meetingMeta, { post }));
-      enqueuePostInteractionExtraction('meeting-debrief', post =>
-        runMeetingDebrief(bot_id, transcriptData, session.meetingMeta, { post }));
       try {
         await refreshRecentMeetingsCache();
       } catch (error) {
@@ -3884,11 +3293,6 @@ function maybeTriggerVoiceResponse(openaiWs, session, userText) {
   } else {
     console.log(`🎙️ Voice: silent (${why || 'not addressed'})`);
   }
-  intelligence.recordTrace({
-    channel: 'meeting', action: 'turn_gate', decision: trigger ? 'speak' : 'stay_silent',
-    confidence: trigger ? 0.9 : 0.75,
-    reasons: [why || 'not addressed', `meeting score ${meetingPolicy.score}/${meetingPolicy.threshold}`, ...meetingPolicy.reasons], preview: userText,
-  });
 }
 
 // ── Slack SEND tool — lets Nora send a Slack message RIGHT NOW to another channel or person when
@@ -4059,7 +3463,7 @@ function enqueueMemoryJob(job) {
   pruneMemoryJobs();
 }
 
-const resolveJohnSlackId = () => findJohnSlackId(loadMemory());
+const resolveJohnSlackId = () => process.env.NORA_OWNER_SLACK_ID || 'UJYKB4788';
 
 const ACTION_WRITE_NAME = /(?:create|update|complete|reopen|add_comment|send|post|write|delete|remove|join|upload|move|rename|queue|schedule)/i;
 
@@ -4069,7 +3473,7 @@ function actionInteractionRef(origin = {}) {
 
 function safelyBeginToolExecution({ toolUseId, toolName, args, meta, origin = {}, deferred = false }) {
   try {
-    return intelligence.beginActionExecution({
+    return operationStore.beginActionExecution({
       tool_use_id: toolUseId, tool_name: meta?.toolName || toolName,
       tool_family: meta?.connectionName || String(toolName || '').split('_')[0] || 'tool',
       actor_class: 'model_selected', selection_origin: 'model_tool_use',
@@ -4085,14 +3489,14 @@ function safelyBeginToolExecution({ toolUseId, toolName, args, meta, origin = {}
 
 function safelyQueueToolExecution(execution, jobId) {
   if (!execution) return;
-  try { intelligence.markActionExecutionQueued(execution.id, { job_id: jobId }); }
+  try { operationStore.markActionExecutionQueued(execution.id, { job_id: jobId }); }
   catch (error) { console.warn(`action execution queue receipt failed for ${execution.tool_name}: ${error.message}`); }
 }
 
 function safelyCompleteToolExecution(executionId, status, resultOrError) {
   if (!executionId) return;
   try {
-    intelligence.completeActionExecution(executionId, status === 'succeeded'
+    operationStore.completeActionExecution(executionId, status === 'succeeded'
       ? { status, result: resultOrError }
       : { status: 'failed', error: String(resultOrError?.message || resultOrError || 'tool failed') });
   } catch (error) { console.warn(`action execution completion receipt failed for ${executionId}: ${error.message}`); }
@@ -4303,7 +3707,7 @@ async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6, opts
   const writeReceiptTimeoutMs = Math.max(1000,
     Number(opts.writeReceiptTimeoutMs) || 8000);
   const persistActionReceipt = opts.persistActionReceipt
-    || (() => intelligence.persistStrict());
+    || (() => operationStore.persistStrict());
   const remaining = () => deadlineMs == null ? Infinity : deadlineMs - (Date.now() - startedAt);
   const operationSignal = signal => opts.signal
     ? AbortSignal.any([signal, opts.signal]) : signal;
@@ -5375,26 +4779,11 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, rootT
     latencyStages.linked_content_ms = Date.now() - linkedContentStartedAt;
 
     const meetingContext = requesterName ? { source: 'slack', requester: { name: requesterName } } : null;
-    // Split the prompt for caching: `stable` (nora-prompt + memory + projects, ~8K tokens)
+    // Split the prompt for caching: the operator prompt stays stable while request context remains
     // gets cached; the volatile half + per-recipient financial notices below all go
     // in `tail`, uncached, so the cache stays identical across users.
-    // Pass the recent conversation so memory retrieval loads the projects/people actually
-    // being discussed, not all ~2,000 memories. (Trades some cross-conversation prompt-cache
-    // sharing for a much smaller, sharper prompt — net cheaper + faster per call regardless.)
-    // Scan a wider window for memory relevance: now that the back-and-forth interleaves her own
-    // replies, the turn that named the project ("Lettermens") can sit well above the last few turns.
-    // This only feeds project/memory selection (uncached tail), so a wider window is cheap.
+    // Pass the recent conversation only to select explicitly named local project context.
     const convText = claudeMessages.slice(-12).map(m => typeof m.content === 'string' ? m.content : '').join(' ');
-    // Lightweight acknowledgments do not benefit from a vector lookup. Skipping it keeps a slow
-    // embeddings endpoint from adding a timeout warning to simple social turns such as "thanks."
-    const lightweightSocial = conversationPolicy.lightweightSocial;
-    if (conversationPolicy.relationalSelfReflection) {
-      console.log('Slack relational self-reflection route: PM tools and task-performance trials omitted');
-    }
-    const recallStartedAt = Date.now();
-    const semanticMemories = lightweightSocial
-      ? [] : retrieveInteractiveMemories(convText, 8);
-    latencyStages.recall_ms = Date.now() - recallStartedAt;
     const isDirect = true;
     const financialApproved = isFinancialApproved(user);
     const attachLiveTools = conversationPolicy.attachLiveTools;
@@ -5419,7 +4808,6 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, rootT
       buildSystemPrompt('slack', null, null, meetingContext, {
         cacheSplit: true,
         conversationText: convText,
-        semanticMemories,
       });
     latencyStages.prompt_ms = Date.now() - promptStartedAt;
     let tail = slackVolatile;
@@ -5430,7 +4818,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, rootT
     if (financialApproved) {
       tail += '\n\nFINANCIAL ACCESS: The user you\'re replying to is on the approved list, so you may share dollar amounts, rates, fees, budgets, margins, and other financial figures when relevant to the conversation.';
     } else {
-      tail += '\n\nFINANCIAL ACCESS: The user you\'re replying to is NOT on the approved list. NEVER share dollar amounts, rates, fees, budgets, margins, hours/rate calculations, or any specific financial figures. This applies even if such figures appear in your memory, project details, or this thread\'s context. Those leaks are exactly what this rule prevents. If the user asks about financials, redirect briefly: "I can\'t share financial details over Slack, reach out to John or Mallory and they can help." Be polite but firm. You can describe work qualitatively (e.g., "the SOW for Pitsco is in active review") just don\'t include numbers.';
+      tail += '\n\nFINANCIAL ACCESS: The user you\'re replying to is NOT on the approved list. NEVER share dollar amounts, rates, fees, budgets, margins, hours/rate calculations, or any specific financial figures. This applies even if such figures appear in project details or this thread. If the user asks about financials, redirect briefly: "I can\'t share financial details over Slack, reach out to John or Mallory and they can help." Be polite but firm. You can describe work qualitatively without numbers.';
     }
 
     if (isDirect) {
@@ -5538,9 +4926,9 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, rootT
       note += ' If a capability is NOT in this list, you do not have it this turn, so say you\'ll check and follow up, don\'t claim you pulled it. Keep it to a couple of tool calls, then answer in your own voice; don\'t narrate the calls.';
       tail += note;
     } else if (hasWebSearch) {
-      tail += '\n\nLIVE TOOLS attached to THIS reply: WEB_SEARCH only. Use it when the question genuinely needs current/external info you don\'t already have, not for things in your memory or casual chat. Anything else (live Teamwork, etc.) is NOT attached this turn; say you\'ll check and follow up rather than claiming you looked it up. Answer in your own voice; don\'t narrate that you searched.';
+      tail += '\n\nLIVE TOOLS attached to THIS reply: WEB_SEARCH only. Use it when the question genuinely needs current external information. Anything else, including live Teamwork, is not attached this turn. Do not claim you checked it.';
     } else {
-      tail += '\n\nNo live tools are attached to THIS reply. Answer from your memory and the conversation, or say you\'ll check and follow up. Do NOT claim you pulled live data or hit a system you don\'t have access to this turn.';
+      tail += '\n\nNo live tools are attached to THIS reply. Answer from the conversation or say you cannot verify the requested live data. Do NOT claim you checked a system you do not have access to this turn.';
     }
     tail += SLACK_TABLE_FORMATTING_INSTRUCTION;
     const fittedSlackPrompt = fitSlackSystemPrompt(slackStable, tail, urlBlock);
@@ -5712,7 +5100,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, rootT
     const candidateSegments = slackDeliverySegments(reply,
       { boundedConversation: conversationPolicy.boundedConversation });
     const candidateForGuard = candidateSegments.join('\n');
-    const actionExecutionRecords = intelligence.actionExecutionsById(actionExecutionIds);
+    const actionExecutionRecords = operationStore.actionExecutionsById(actionExecutionIds);
     reply = candidateForGuard;
     if (!financialApproved && containsFinancialContent(reply)) {
       console.warn(`Post-monitor financial scrubber blocked a leak to unapproved user ${user}`);
@@ -5722,7 +5110,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, rootT
       executions: actionExecutionRecords });
     reply = finalActionClaimGuard.response;
     try {
-      intelligence.recordActionClaimAttestation({ ...finalActionClaimGuard,
+      operationStore.recordActionClaimAttestation({ ...finalActionClaimGuard,
         surface: 'slack', interaction_ref: turnRef, final_response: reply });
     } catch (error) {
       console.warn(`action completion claim attestation failed: ${error.message}`);
@@ -5804,29 +5192,6 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, rootT
       markThreadJoined(channel, threadTs);
     }
 
-    // Only extract tasks/memory if Nora's reply isn't asking clarifying questions
-    if (!isAskingClarification(reply)) {
-      // Pass thread_ts through so cowork can post the resolution back into this same thread.
-      // DMs do not have meaningful threads, so pass an empty thread id.
-      const sourceThreadTs = (channelType === 'im' || channelType === 'mpim') ? '' : threadTs;
-      // Task extraction: skip when (a) Nora already handled it LIVE this turn — a Teamwork write or a
-      // Slack send fired, so re-filing it as a queued task would duplicate it.
-      const shouldExtractTask = !(wroteLive || sentSlack || conversationPolicy.boundedConversation);
-      if (!shouldExtractTask) {
-        console.log(`⏭️ Skipping task extraction (${wroteLive ? 'live write handled it' : sentSlack ? 'sent live' : 'bounded conversation lane'})`);
-      }
-      // Memory extraction runs in all cases — learning facts from the discussion is always useful.
-      enqueuePostInteractionExtraction('slack', async post => {
-        if (shouldExtractTask) {
-          await extractTasks(text, text, reply, { channel: `slack:${channel}`, user,
-            thread_ts: sourceThreadTs, external_id: triggerTs || null,
-            attestation: sourceAttestation }, { post });
-        }
-        await extractMemory(text, text, reply, null, { post });
-      });
-    } else {
-      console.log('⏸️ Skipping extraction — Nora is asking clarifying questions');
-    }
   } catch (err) {
     console.error('Slack handler error:', err.response?.data || err.message);
     // Try to post error message back
@@ -6133,16 +5498,10 @@ app.get('/jobs', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-registerMemoryRoutes(app, { requireAuth, loadMemory, mutateMemory, ensureProject, bumpProjectActivity, newMemoryId, db,
-  isDbReady: () => _dbReady, normalizeMemoryRecord,
-  memoryLifecycle, getMemoryDigest: () => memoryMaintenance.currentDigest(),
-  getExpectationSurprise: id => intelligence.expectationSurprise(id),
-  getOperationalDefaults: currentOperationalDefaults });
-
 // ── Cowork run lock ─────────────────────────────────────────────────────────
 // Defense against overlapping hourly cowork runs (the scheduler double-firing or a run
 // outlasting the hour). A run acquires the lock at the top; if another run already holds
-// a non-expired lock, the new run SKIPS its memory-mutating work and exits. The exact lease
+// a non-expired lock, the new run skips its state-changing work and exits. The exact lease
 // and lifecycle binding are persisted so a deploy cannot admit a second lineage. TTL expiry
 // remains recoverable, but the lifecycle must be gap-closed before a successor can start.
 const RUN_LOCK_STATE_PATH = fs.existsSync(VOLUME_DIR)
@@ -6225,17 +5584,17 @@ function isRunBoundCycle(cycle) {
 
 function recoverRunBoundLifecycleWithoutLease() {
   if (loadDurableRunLock()) return { recovered: 0, records: [] };
-  const orphan = intelligence.list('cycles').find(item => item.status === 'running'
+  const orphan = operationStore.list('cycles').find(item => item.status === 'running'
     && isRunBoundCycle(item));
   if (!orphan) return { recovered: 0, records: [] };
-  return intelligence.recoverStaleCycles({
+  return operationStore.recoverStaleCycles({
     staleAfterMs: 0,
     reason: 'run_lock_missing_after_restart',
   });
 }
 
 registerRunLockRoutes(app, requireAuth, {
-  processEpochId: _somaProcessEpochId,
+  processEpochId: PROCESS_EPOCH_ID,
   loadLock: loadDurableRunLock,
   saveLock: saveDurableRunLock,
   activityStream: runtimeActivity,
@@ -6265,7 +5624,7 @@ registerRunLockRoutes(app, requireAuth, {
     if (!lifecycleSource) return null;
     await drainOptionalWorkForOperationalRun(holder);
     const fallback = lifecycleSource === 'railway_fallback';
-    const started = await intelligence.openOrResumeCycle({
+    const started = await operationStore.openOrResumeCycle({
       kind: fallback ? 'fallback_hourly' : 'hourly',
       holder: fallback ? 'nora-railway-fallback' : 'nora-cowork',
       run_lock_holder: holder,
@@ -6282,10 +5641,10 @@ registerRunLockRoutes(app, requireAuth, {
   onRelease: async ({ lifecycle, expired = false, persistence_failed: persistenceFailed = false,
     status = null }) => {
     if (!lifecycle?.cycle_id) return lifecycle;
-    const cycle = intelligence.list('cycles').find(item => item.id === lifecycle.cycle_id);
+    const cycle = operationStore.list('cycles').find(item => item.id === lifecycle.cycle_id);
     if (!cycle || cycle.status !== 'running') return lifecycle;
     const failed = expired || persistenceFailed || status === 'failed';
-    await intelligence.completeCycleDurable(cycle.id, {
+    await operationStore.completeCycleDurable(cycle.id, {
       status: failed ? 'failed' : 'completed',
       summary: failed
         ? 'Scheduled PM run ended without a clean lock release.'
@@ -6296,50 +5655,15 @@ registerRunLockRoutes(app, requireAuth, {
   },
 });
 
-// ── Markers API (operational idempotency bookkeeping; NOT knowledge) ─────────
-// The cowork loop writes/checks markers here instead of stuffing them into /memory.
-// Existence check is exact and O(1), far more robust than the old "grep memory for a fact
-// like X" substring match. See MARKER_PATTERNS above for the key scheme.
+// ── Markers API (operational idempotency bookkeeping) ────────────────────────
+// Exact keys make repeated scheduled runs safe without storing narrative context.
 
-registerMarkerRoutes(app, { requireAuth, loadMarkers, mutateMarkers, loadMemory, mutateMemory, markerKeyForFact });
+registerMarkerRoutes(app, { requireAuth, loadMarkers, mutateMarkers });
 
 registerProjectRoutes(app, { requireAuth, loadProjects, saveProjects });
 
 registerTaskRoutes(app, {
   requireAuth, loadTasks, saveTasks, addTask, isTaskEligibleNow, isValidRecurrence, computeNextRun,
-  onTaskCreated: task => {
-    if (!task.assignee || /nora/i.test(task.assignee)) {
-      const existing = intelligence.list('commitments', item => item.task_id === task.id)[0];
-      if (!existing) {
-        intelligence.addCommitment({ what: task.action, owner: task.assignee || 'Nora', due: task.due || task.scheduled_for, notes: task.detail, task_id: task.id });
-      }
-    }
-  },
-  onTaskCompleted: (task, meta) => {
-    if (!meta.recurring) {
-      const commitments = intelligence.list('commitments',
-        item => item.task_id === task.id && item.status === 'open');
-      for (const commitment of commitments) {
-        intelligence.updateCommitment(commitment.id, {
-          status: 'fulfilled',
-          notes: `Task completed ${meta.completed_at}`,
-        });
-      }
-      const correlation = task.source_bot_id ? `meeting:${task.source_bot_id}`
-        : task.source_channel ? `slack:${task.source_channel.replace(/^slack:/, '')}:${task.source_thread_ts || 'channel'}` : `task:${task.id}`;
-      intelligence.recordEpisodeEvent({ correlation, channel: 'task', kind: 'commitment_fulfilled', actor: 'Nora', text: task.action, at: meta.completed_at });
-    }
-  },
-  onTaskDeleted: (task, meta) => {
-    const commitments = intelligence.list('commitments',
-      item => item.task_id === task.id && item.status === 'open');
-    for (const commitment of commitments) {
-      intelligence.updateCommitment(commitment.id, {
-        status: 'dropped',
-        notes: `Task deleted ${meta.deleted_at}`,
-      });
-    }
-  },
 });
 
 let _hourlyFallbackInFlight = false;
@@ -6403,10 +5727,7 @@ function nativeTaskAttemptKey(taskId) {
   return `native-hourly-task-attempt:${String(taskId || '').slice(0, 200)}`;
 }
 
-function nativeTaskExecutionHistory(taskId, snapshot = intelligence.agencySnapshot()) {
-  if (snapshot?.experimental_access_sealed) {
-    return { available: false, succeeded_writes: [], uncertain_writes: [] };
-  }
+function nativeTaskExecutionHistory(taskId, snapshot = operationStore.actionSnapshot()) {
   const executions = (snapshot?.executions || []).filter(item =>
     item.surface === 'railway_hourly' && item.interaction_ref === String(taskId || '')
     && ['write', 'mixed'].includes(item.access_mode));
@@ -6815,10 +6136,10 @@ async function checkExplicitScheduledWork({
   return result;
 }
 async function runHourlyFallbackRuntime({ trigger = 'scheduler' } = {}) {
-  const primaryHealth = hourlyLifecycleHealth(intelligence.list('cycles'));
+  const primaryHealth = hourlyLifecycleHealth(operationStore.list('cycles'));
   const durableLock = loadDurableRunLock();
   const decision = hourlyFallbackDecision({
-    cycles: intelligence.list('cycles'), primaryHealth,
+    cycles: operationStore.list('cycles'), primaryHealth,
     lock: durableLock && Number(durableLock.expires_at) > Date.now()
       ? { locked: true, holder: durableLock.holder } : { locked: false },
     interactive: interactivePerformance.prioritySnapshot(),
@@ -6921,7 +6242,7 @@ registerRuntimeActivityRoutes(app, {
   stream: runtimeActivity,
   getRunLock: loadDurableRunLock,
   getContextSnapshot: () => ({
-    hourly_lifecycle: hourlyLifecycleHealth(intelligence.list('cycles')),
+    hourly_lifecycle: hourlyLifecycleHealth(operationStore.list('cycles')),
     hourly_fallback: { in_flight: _hourlyFallbackInFlight, last: _hourlyFallbackLast },
   }),
 });
@@ -7199,15 +6520,11 @@ app.get('/admin/prompt-envelope', requireAuth, (req, res) => {
   const prompt = buildSystemPrompt(channel, surface === 'realtime' ? [] : null, null, meetingContext, {
     cacheSplit: true,
     conversationText: String(req.query.query || 'current work status and priorities').slice(0, 500),
-    semanticMemories: Array.from({ length: 8 }, (_, index) => ({
-      fact: `Diagnostic semantic-memory headroom ${index} ${'x'.repeat(260)}`,
-    })),
     contextTrialsEnabled: false,
     latencyCritical: true,
     sideEffectFree: true,
     exemplarsAvailable: surface === 'slack',
     diagnosticLocalExemplars: surface === 'slack',
-    captureIntelligenceReceipt: surface === 'slack',
     situationalAffordanceFrame,
   });
   const linkedContentReserve = surface === 'slack' ? 1650 : 0;
@@ -7525,75 +6842,10 @@ function reconcileTranscriptSessionAfterEdit(botId, durableLength, mutate) {
   _transcriptCheckpointStalled.delete(botId);
   _transcriptCheckpointAttempts.delete(botId);
 }
-const TRANSCRIPT_EPISODE_CHECKPOINT_MS = 30000;
-const _transcriptEpisodeTimers = new Map();
-const _transcriptEpisodePending = new Map();
-const _transcriptEpisodeRecordedCounts = new Map();
-const _transcriptEpisodeInFlight = new Map();
 let _transcriptCheckpointsClosing = false;
-function transcriptEpisodeInputs(botId, entries) {
-  return entries.map(item => ({
-    correlation: `meeting:${botId}`, title: 'Meeting', channel: 'meeting', kind: 'utterance',
-    actor: item.speaker, text: item.text, at: item.timestamp,
-    source_ref: { channel: 'meeting', id: botId, captured_at: item.timestamp },
-  }));
-}
-async function flushTranscriptEpisodeCheckpoint(botId, transcript = null) {
-  const active = _transcriptEpisodeInFlight.get(botId);
-  if (active) await active;
-  const pending = transcript || _transcriptEpisodePending.get(botId);
-  if (!Array.isArray(pending) || !pending.length) return 0;
-  const batch = planTranscriptEpisodeBatch(_transcriptEpisodeRecordedCounts.get(botId), pending);
-  const entries = batch.entries;
-  if (!entries.length) return 0;
-  const operation = intelligence.recordEpisodeEvents(transcriptEpisodeInputs(botId, entries));
-  _transcriptEpisodeInFlight.set(botId, operation);
-  try {
-    await operation;
-    const nextRecorded = batch.next_recorded;
-    _transcriptEpisodeRecordedCounts.set(botId, nextRecorded);
-    if (nextRecorded >= pending.length && _transcriptEpisodePending.get(botId) === pending) {
-      _transcriptEpisodePending.delete(botId);
-    }
-    return entries.length;
-  } finally {
-    if (_transcriptEpisodeInFlight.get(botId) === operation) {
-      _transcriptEpisodeInFlight.delete(botId);
-    }
-  }
-}
-function scheduleTranscriptEpisodeCheckpoint(botId, transcript) {
-  _transcriptEpisodePending.set(botId, transcript);
-  if (_transcriptCheckpointsClosing || _transcriptEpisodeTimers.has(botId)) return;
-  const timer = setTimeout(() => {
-    _transcriptEpisodeTimers.delete(botId);
-    const foregroundGate = beginOptionalBackground(`transcript-episodes:${botId}`);
-    if (!foregroundGate.allowed) {
-      const pending = _transcriptEpisodePending.get(botId);
-      if (pending && !_transcriptCheckpointsClosing) {
-        scheduleTranscriptEpisodeCheckpoint(botId, pending);
-      }
-      return;
-    }
-    flushTranscriptEpisodeCheckpoint(botId)
-      .catch(error => {
-        console.error('Transcript episode checkpoint failed:', error.message);
-        const pending = _transcriptEpisodePending.get(botId);
-        if (pending && !_transcriptCheckpointsClosing) {
-          scheduleTranscriptEpisodeCheckpoint(botId, pending);
-        }
-      })
-      .finally(() => foregroundGate.release());
-  }, TRANSCRIPT_EPISODE_CHECKPOINT_MS);
-  timer.unref?.();
-  _transcriptEpisodeTimers.set(botId, timer);
-}
-
 const ensureMeetingTranscriptHydrated = createMeetingTranscriptHydrator({
   getTranscript: getTranscriptDoc,
   persistedCounts: _transcriptPersistedCounts,
-  episodeRecordedCounts: _transcriptEpisodeRecordedCounts,
-  episodePending: _transcriptEpisodePending,
 });
 
 function armTranscriptCheckpoint(botId, delayMs = 1000) {
@@ -7607,7 +6859,7 @@ function armTranscriptCheckpoint(botId, delayMs = 1000) {
     _transcriptCheckpointPending.delete(botId);
     if (!pending) return;
     const operation = saveTranscriptDoc(botId, pending.transcript, pending.ended, {
-      recordEpisode: false, incremental: true,
+      incremental: true,
     }).then(() => {
       _transcriptCheckpointAttempts.delete(botId);
       _transcriptCheckpointStalled.delete(botId);
@@ -7673,24 +6925,14 @@ function queueTranscriptCheckpoint(botId, transcript, { ended = null, delayMs = 
 }
 
 function scheduleTranscriptCheckpoint(botId, transcript) {
-  scheduleTranscriptEpisodeCheckpoint(botId, transcript);
   queueTranscriptCheckpoint(botId, transcript);
 }
-async function saveTranscriptDoc(botId, transcript, ended, { recordEpisode = true,
-  incremental = false } = {}) {
+async function saveTranscriptDoc(botId, transcript, ended, { incremental = false } = {}) {
   if (ended) {
     const timer = _transcriptCheckpointTimers.get(botId);
     if (timer) clearTimeout(timer);
     _transcriptCheckpointTimers.delete(botId);
     _transcriptCheckpointPending.delete(botId);
-    const episodeTimer = _transcriptEpisodeTimers.get(botId);
-    if (episodeTimer) clearTimeout(episodeTimer);
-    _transcriptEpisodeTimers.delete(botId);
-  }
-  if (recordEpisode) await flushTranscriptEpisodeCheckpoint(botId, transcript);
-  if (ended) {
-    _transcriptEpisodePending.delete(botId);
-    _transcriptEpisodeRecordedCounts.delete(botId);
   }
   const session = sessions[botId] || { transcript: Array.isArray(transcript) ? transcript : [] };
   if (incremental) await ensureMeetingTranscriptHydrated(botId, session);
@@ -7718,33 +6960,14 @@ async function drainTranscriptCheckpoints() {
     _transcriptCheckpointPending.clear();
     for (const [botId, pending] of rawPending) {
       await saveTranscriptDoc(botId, pending.transcript, pending.ended, {
-        recordEpisode: false, incremental: true,
+        incremental: true,
       });
     }
     if (_transcriptCheckpointInFlight.size === 0
       && _transcriptCheckpointPending.size === 0) break;
   }
-  for (const timer of _transcriptEpisodeTimers.values()) clearTimeout(timer);
-  _transcriptEpisodeTimers.clear();
-  const episodeBotIds = [...new Set([
-    ..._transcriptEpisodePending.keys(), ..._transcriptEpisodeInFlight.keys(),
-  ])];
-  for (const botId of episodeBotIds) await flushTranscriptEpisodeCheckpoint(botId);
 }
 
-async function extractMeetingIntelligence(botId, transcriptData, meetingMeta = {}, { post = axios.post } = {}) {
-  if (!process.env.ANTHROPIC_API_KEY || !Array.isArray(transcriptData?.transcript) || !transcriptData.transcript.length) return null;
-  const transcript = compactTranscript(transcriptData.transcript);
-  const response = await post('https://api.anthropic.com/v1/messages', {
-    model: 'claude-sonnet-4-6', max_tokens: 1800,
-    system: meetingIntelligenceSystemPrompt(),
-    messages: [{ role: 'user', content: `Meeting metadata: ${JSON.stringify({ title: meetingMeta?.title || meetingMeta?.meeting_title || null, project: meetingMeta?.project || null })}\n\nTranscript:\n${transcript}` }],
-  }, { headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' }, timeout: 30000 });
-  const text = (response.data.content || []).filter(block => block.type === 'text').map(block => block.text).join('').trim();
-  const extracted = parseMeetingIntelligence(text);
-  const result = applyMeetingIntelligence(intelligence, { botId, ended: transcriptData.ended, meetingMeta, extracted });
-  return result;
-}
 async function getTranscriptDoc(botId) {
   if (_dbReady) {
     const r = await db.getTranscript(botId);
@@ -7896,13 +7119,7 @@ const recallTranscriptRecovery = createRecallTranscriptRecoveryRuntime({
   persistedCounts: _transcriptPersistedCounts,
   clearActiveBot: botId => { if (activeBotId === botId) activeBotId = null; },
   refreshRecentMeetings: refreshRecentMeetingsCache,
-  enqueuePostProcessing: ({ botId, ended, transcript, meetingMeta }) => {
-    const data = { bot_id: botId, ended, transcript };
-    enqueuePostInteractionExtraction('recovered-meeting-intelligence', post =>
-      extractMeetingIntelligence(botId, data, meetingMeta, { post }));
-    enqueuePostInteractionExtraction('recovered-meeting-debrief', post =>
-      runMeetingDebrief(botId, data, meetingMeta, { post }));
-  },
+  enqueuePostProcessing: () => {},
 });
 
 async function drainRecentMeetingsRefresh({ timeoutMs = 10000 } = {}) {
@@ -8032,50 +7249,6 @@ app.delete('/transcripts/:botId/utterances/:index', requireAuth, async (req, res
 });
 
 // ============================================================
-// Dreams — Nora's nightly memory-consolidation + reflection log
-// ============================================================
-// "Dreaming" (à la Anthropic's agent-memory consolidation) is a nightly pass the cowork
-// loop runs: it consolidates memory (semantic dedup, contradiction resolution, pruning,
-// reorganization) AND reflects (forms evidence-bound professional viewpoints, surfaces ideas). The
-// actual work happens in the cowork loop with Claude reasoning + the /memory API; these
-// endpoints are just the durable LOG of each dream so the dashboard can show what she did
-// while "asleep." Stored on the Railway volume like the other runtime state, append-style
-// (newest dreams kept, capped to avoid unbounded growth).
-const DREAMS_PATH_VOLUME = path.join(VOLUME_DIR, 'nora-dreams.json');
-const DREAMS_PATH_LOCAL = path.join(LOCAL_DATA_DIR, 'nora-dreams.json');
-function getDreamsPath() {
-  return fs.existsSync(VOLUME_DIR) ? DREAMS_PATH_VOLUME : DREAMS_PATH_LOCAL;
-}
-function loadDreams() {
-  if (_dbReady) return _cache.dreams || [];
-  try { return JSON.parse(fs.readFileSync(getDreamsPath(), 'utf8')); }
-  catch { return []; }
-}
-function saveDreams(dreams) {
-  if (_dbReady) {
-    _cache.dreams = dreams;
-    const snapshot = JSON.parse(JSON.stringify(dreams));
-    return _writeThrough('dreams', async () => {
-      const delta = diffDreamPersistence(_persistedDreamState, snapshot);
-      await db.applyDreamChanges(delta);
-      _persistedDreamState = captureDreamPersistence(snapshot);
-    });
-  }
-  try { fs.writeFileSync(getDreamsPath(), JSON.stringify(dreams, null, 2)); }
-  catch (err) { console.error('Failed to persist dreams:', err.message); }
-}
-function saveDreamsStrict(dreams) {
-  if (!_dbReady) { saveDreams(dreams); return Promise.resolve(); }
-  _cache.dreams = dreams;
-  const snapshot = JSON.parse(JSON.stringify(dreams));
-  return _writeThrough('dreams', async () => {
-    const delta = diffDreamPersistence(_persistedDreamState, snapshot);
-    await db.applyDreamChanges(delta);
-    _persistedDreamState = captureDreamPersistence(snapshot);
-  }, { strict: true });
-}
-const MAX_DREAMS_KEPT = 120; // ~4 months of nightly dreams; trims oldest beyond this
-
 // OpenAI Realtime handles the voice conversation directly in the bot's browser.
 // The extraction pipelines are triggered via /voice-agent/response when OpenAI finishes a response.
 
@@ -8190,291 +7363,6 @@ async function describeScreenshareForTranscript(base64Png, botId) {
 // The core of "send her in your place": John can skip the meeting and still know exactly what
 // came out of it within a minute of it ending. Non-fatal everywhere; a failed debrief never
 // affects transcript filing or session teardown.
-async function runMeetingDebrief(botId, transcriptData, meetingMeta, { post = axios.post } = {}) {
-  try {
-    const t = (transcriptData && transcriptData.transcript) || [];
-    if (t.length < 10) return; // mic checks and micro-meetings don't need a debrief
-    // John's Slack ID lives in memory as a fact (the cowork loop saved it).
-    let johnId = null;
-    for (const m of loadMemory()) {
-      const match = /John Kuefler'?s Slack user ID is (U[A-Z0-9]{6,})/i.exec(m.fact || '');
-      if (match) { johnId = match[1]; break; }
-    }
-    if (!johnId) { console.warn('debrief: John Slack ID not found in memory, skipping'); return; }
-    const lines = t.map(u => `[${u.speaker}]: ${u.text}`).join('\n').slice(0, 24000);
-    const mandateNote = meetingMeta && meetingMeta.mandate
-      ? `\nJohn's mandate for this meeting was: "${meetingMeta.mandate}". Lead with how it went against that mandate.`
-      : '';
-    const resp = await post('https://api.anthropic.com/v1/messages', {
-      model: 'claude-sonnet-4-6',
-      max_tokens: 500,
-      system: `You write Nora's post-meeting debrief DM to John Kuefler. Nora is LimeLight's AI PM and attended this meeting, sometimes in John's place. Write AS Nora in her voice: casual, direct, specific, no corporate filler, never an em dash. Shape: 2 to 6 short lines. First line is the headline of what actually happened. Then ONLY the sections that apply, inline, no headers: commitments Nora made (exact, with dates), asks of John or LimeLight that Nora punted (who asked, what they need, by when she promised him an answer), and decisions only John can make. Skip anything empty. If the meeting was routine and nothing needs John, say so in one line and stop.`,
-      messages: [{ role: 'user', content: `Meeting transcript:${mandateNote}\n\n${lines}\n\nWrite the debrief DM now.` }]
-    }, { headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' } });
-    const text = (resp.data.content || []).filter(b => b.type === 'text').map(b => b.text).join(' ').trim();
-    if (!text) return;
-    await post('https://slack.com/api/chat.postMessage',
-      { channel: johnId, text },
-      { headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` } });
-    console.log(`📋 Meeting debrief DMed to John (${t.length} utterances${meetingMeta && meetingMeta.mandate ? ', mandate-measured' : ''})`);
-  } catch (e) {
-    if (e.code === 'ERR_CANCELED' || e.name === 'CanceledError' || e.name === 'AbortError') throw e;
-    console.warn('meeting debrief failed (non-fatal):', e.message);
-  }
-}
-
-async function extractMemory(context, trigger, reply, sourceBotId, { post = axios.post } = {}) {
-  try {
-    const projects = loadProjects();
-    const projectNames = projects.map(p => p.name);
-    const projectHint = projectNames.length > 0
-      ? `\n\nKnown projects: ${projectNames.join(', ')}. If the fact relates to one of these projects, use that exact name. If it relates to a different project, use whatever name was mentioned. If it's general (not project-specific), use "".`
-      : '\n\nIf the fact relates to a specific project, include the project name as mentioned in conversation. If it\'s general, use "".';
-
-    const response = await post(
-      'https://api.anthropic.com/v1/messages',
-      {
-        // Sonnet 4.6 (up from Haiku): extraction quality compounds — better memory feeds
-        // her dreams, learnings, and live context. Worth the cost on a background pipeline.
-        model: 'claude-sonnet-4-6',
-        max_tokens: 300,
-        temperature: 0,
-        system: `You decide if something should be saved to Nora's long-term memory. ONLY save something if one of these is true: (1) someone explicitly asked Nora to remember something (e.g. "Nora remember that..." or "don't forget..."), or (2) Nora was asked to do a specific action item with a clear owner and deadline. That's it. Do NOT save general discussion, decisions, status updates, opinions, project details, or anything else — even if it seems useful. When in doubt, return [].
-
-Financial figures (dollar amounts, rates, budgets, margins) are FINE to include in memory if they're relevant to the fact being saved. Distribution to non-approved recipients is gated separately at Nora's live-handler output — don't self-censor at the memory layer.
-
-Respond with a JSON array of objects with: "fact" (string), "project" (project name or empty), "kind" (fact|preference|commitment|inference), "confidence" (0 to 1), and "source_quote" (the shortest exact phrase supporting it). Never turn an inference into a fact.${projectHint}`,
-        messages: [{ role: 'user', content: `Meeting snippet:\n${context}\n\nTriggering message: ${trigger}\n\nNora's response: ${reply}\n\nFacts worth remembering (JSON array or []):` }]
-      },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': process.env.ANTHROPIC_API_KEY,
-          'anthropic-version': '2023-06-01'
-        }
-      }
-    );
-
-    const text = response.data.content.filter(b => b.type === 'text').map(b => b.text).join('');
-    const match = text.match(/\[[\s\S]*\]/);
-    if (!match) return;
-
-    const items = JSON.parse(match[0]);
-    if (!Array.isArray(items) || items.length === 0) return;
-
-    // CRITICAL: do the dedup + push INSIDE the mutation lock, which reloads memory fresh.
-    // Previously this loaded memory BEFORE the multi-second Claude await above, then saved
-    // the stale array — clobbering anything written during the await (e.g. a transcript-
-    // filed marker from an overlapping run → that transcript got re-filed). The lock both
-    // re-reads current state and serializes against other writers.
-    const projectsTouched = new Set();
-    const { result: added } = await mutateMemory(memory => {
-      const existingFacts = new Set(memory.map(m => m.fact.toLowerCase()));
-      let n = 0;
-      for (const item of items) {
-        // Support both old format (plain strings) and new format (objects with fact + project)
-        const fact = typeof item === 'string' ? item : item.fact;
-        const rawProject = typeof item === 'string' ? '' : (item.project || '');
-        const project = rawProject ? ensureProject(rawProject) : '';
-        if (typeof fact === 'string' && fact.trim() && !existingFacts.has(fact.toLowerCase())) {
-          memory.push(normalizeMemoryRecord({
-            id: newMemoryId(), fact, project, added: new Date().toISOString().split('T')[0],
-            source: sourceBotId ? 'meeting' : 'slack', source_bot_id: sourceBotId || '',
-            kind: typeof item === 'object' ? item.kind : undefined,
-            confidence: typeof item === 'object' ? item.confidence : undefined,
-            source_ref: { channel: sourceBotId ? 'meeting' : 'slack', id: sourceBotId || null, url: sourceBotId ? `/transcripts/${sourceBotId}` : null, quote: typeof item === 'object' ? item.source_quote : null, captured_at: new Date().toISOString() },
-          }));
-          existingFacts.add(fact.toLowerCase());
-          if (project) projectsTouched.add(project);
-          n++;
-        }
-      }
-      return n;
-    });
-    if (added > 0) {
-      for (const p of projectsTouched) bumpProjectActivity(p);
-      console.log(`🧠 Auto-saved ${added} memor${added === 1 ? 'y' : 'ies'}:`, items);
-    }
-  } catch (err) {
-    if (err.code === 'ERR_CANCELED' || err.name === 'CanceledError' || err.name === 'AbortError') throw err;
-    console.error('Memory extraction error:', err.message);
-  }
-}
-
-async function extractTasks(context, trigger, reply, source = {}, { post = axios.post } = {}) {
-  try {
-    // Debounce: skip if we just ran extraction within the last 5 seconds for this bot
-    const botId = source.bot_id || 'unknown';
-    const now = Date.now();
-    if (!extractTasks._lastRun) extractTasks._lastRun = {};
-    if (extractTasks._lastRun[botId] && now - extractTasks._lastRun[botId] < 5000) {
-      console.log('⏩ Skipping task extraction (debounce)');
-      return;
-    }
-    extractTasks._lastRun[botId] = now;
-
-    const existingTasks = loadTasks().filter(t => t.status === 'pending');
-    const recentTaskList = existingTasks.slice(-10).map(t =>
-      `- ${t.action}${t.detail ? ' (' + t.detail + ')' : ''}${t.assignee ? ' [' + t.assignee + ']' : ''}`
-    ).join('\n');
-
-    // Current Chicago-local time, so Claude can resolve relative dates like
-    // "next Tuesday" or "tomorrow morning" into an ISO datetime.
-    const nowCT = new Intl.DateTimeFormat('en-US', {
-      timeZone: SCHEDULE_TZ, weekday: 'long', year: 'numeric', month: 'long',
-      day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true
-    }).format(new Date());
-
-    const response = await post(
-      'https://api.anthropic.com/v1/messages',
-      {
-        model: 'claude-sonnet-4-6', // Sonnet 4.6 (up from Haiku) — sharper task extraction
-        max_tokens: 400,
-        temperature: 0,
-        system: `You extract action items that Nora (an AI PM assistant) was explicitly asked to do. ONLY extract tasks where someone directly asked Nora to take an action — things like "Nora, schedule a meeting with...", "Nora, send Kyle an email about...", "Nora, remind me to...".
-
-Current time (Nora's local timezone, America/Chicago): ${nowCT}.
-
-CRITICAL RULES:
-- Extract exactly ONE task per distinct request. Do not split a single request into multiple tasks.
-- Extract the UNDERLYING action, not a meta-action. If someone says "create a Teamwork task for Aaron to update staging", the task is "Update staging environment" assigned to Aaron — NOT "Create a Teamwork task".
-- IGNORE Nora's reply when determining what to extract. Only extract from what the user said.
-- Do NOT extract general discussion, suggestions Nora made, or things other people said they would do.
-- Do NOT extract tasks that already exist in the pending tasks list below. If something similar is already tracked, return [].
-- If the conversation is just casual/social (greetings, small talk, status updates), return [].
-
-SCHEDULING — only set scheduled_for / recurrence when the user gave an explicit time signal. Leave both empty otherwise.
-- One-shot deferred ("send it Monday", "follow up next Tuesday morning", "remind me in an hour") → scheduled_for = ISO datetime, computed from current time above. Default time = 09:00 America/Chicago unless the speaker specified a clock time. Pass timezone offset in the ISO string.
-- Recurring ("every Friday at 4", "daily at 9", "weekdays at 8:30", "monthly on the 1st at 9") → recurrence = one of these keyword forms:
-    daily:HH:MM             — every day at HH:MM Central
-    weekdays:HH:MM          — Mon-Fri at HH:MM Central
-    weekly:dayname:HH:MM    — e.g. weekly:friday:16:00 (lowercase day name)
-    monthly:N:HH:MM         — Nth day of month (1-31; auto-clamps to month length)
-    every:N:weeks:HH:MM     — e.g. every:2:weeks:10:30 for biweekly
-  Leave scheduled_for empty when recurrence is set — the server seeds the first fire time from the rule.
-
-EXISTING PENDING TASKS (do not duplicate these):
-${recentTaskList || '(none)'}
-
-Return a JSON array of objects with: action (short verb phrase — what to do), detail (specifics, keep brief), assignee (who it's for, if mentioned), due (deadline note if mentioned, otherwise ""), scheduled_for (ISO datetime string or ""), recurrence (keyword form above or ""). Return [] if no NEW action items.`,
-        messages: [{ role: 'user', content: `Meeting context:\n${context}\n\nTriggering utterance: ${trigger}\n\nNora's response: ${reply}\n\nNew action items for Nora (JSON array or []):` }]
-      },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': process.env.ANTHROPIC_API_KEY,
-          'anthropic-version': '2023-06-01'
-        }
-      }
-    );
-
-    const text = response.data.content.filter(b => b.type === 'text').map(b => b.text).join('');
-    const match = text.match(/\[[\s\S]*\]/);
-    if (!match) return;
-
-    const items = JSON.parse(match[0]);
-    if (!Array.isArray(items) || items.length === 0) return;
-
-    let filteredItems = items.filter(i => i.action && typeof i.action === 'string');
-    if (filteredItems.length === 0) return;
-
-    // Secondary dedup check: compare against existing tasks with Claude
-    if (existingTasks.length > 0) {
-      try {
-        const existingList = existingTasks.map(t => `- ${t.action}${t.detail ? ' (' + t.detail + ')' : ''}${t.assignee ? ' [' + t.assignee + ']' : ''}`).join('\n');
-        const newList = filteredItems.map((t, i) => `${i}: ${t.action}${t.detail ? ' (' + t.detail + ')' : ''}${t.assignee ? ' [' + t.assignee + ']' : ''}`).join('\n');
-        const dedupRes = await post(
-          'https://api.anthropic.com/v1/messages',
-          {
-            model: 'claude-sonnet-4-6', // Sonnet 4.6 (up from Haiku) — better semantic dedup
-            max_tokens: 200,
-            temperature: 0,
-            system: `You check for duplicate tasks. Given existing tasks and new candidates, return a JSON array of indices of new tasks that are genuinely NOT duplicates.
-
-A task IS a duplicate if:
-- An existing task covers the same action for the same person/purpose, even if worded differently
-- It's a meta-version of an existing task (e.g. "create a task to update staging" duplicates "update staging environment")
-- Two new candidates cover the same thing — only keep one
-
-Be strict — if in doubt, it's a duplicate. Return only indices of truly new tasks, e.g. [0, 2]. If all duplicates, return [].`,
-            messages: [{ role: 'user', content: `Existing pending tasks:\n${existingList}\n\nNew candidates:\n${newList}\n\nIndices of non-duplicate new tasks:` }]
-          },
-          {
-            headers: {
-              'Content-Type': 'application/json',
-              'x-api-key': process.env.ANTHROPIC_API_KEY,
-              'anthropic-version': '2023-06-01'
-            }
-          }
-        );
-        const dedupText = dedupRes.data.content.filter(b => b.type === 'text').map(b => b.text).join('');
-        const dedupMatch = dedupText.match(/\[[\s\S]*?\]/);
-        if (dedupMatch) {
-          const keepIndices = JSON.parse(dedupMatch[0]);
-          if (Array.isArray(keepIndices)) {
-            const before = filteredItems.length;
-            filteredItems = filteredItems.filter((_, i) => keepIndices.includes(i));
-            if (filteredItems.length < before) {
-              console.log(`🔍 Dedup: ${before - filteredItems.length} duplicate task(s) filtered out`);
-            }
-          }
-        }
-      } catch (dedupErr) {
-        console.error('Task dedup check error (proceeding anyway):', dedupErr.message);
-      }
-    }
-
-    // Build context snippet: the conversation around when the task was requested
-    const contextSnippet = `${context}\n\n[Trigger]: ${trigger}\n[Nora replied]: ${reply}`;
-
-    for (const item of filteredItems) {
-      // Validate scheduling fields — drop them silently if malformed so a bad
-      // extraction doesn't lose the task itself.
-      let scheduledFor = item.scheduled_for || null;
-      if (scheduledFor) {
-        const d = new Date(scheduledFor);
-        if (isNaN(d.getTime())) {
-          console.warn(`⚠️ extractTasks: dropping invalid scheduled_for "${scheduledFor}"`);
-          scheduledFor = null;
-        } else {
-          scheduledFor = d.toISOString();
-        }
-      }
-      let recurrence = item.recurrence || null;
-      if (recurrence && !isValidRecurrence(recurrence)) {
-        console.warn(`⚠️ extractTasks: dropping invalid recurrence "${recurrence}"`);
-        recurrence = null;
-      }
-      if (recurrence && !scheduledFor) {
-        scheduledFor = computeNextRun(recurrence);
-      }
-      addTask({
-        action: item.action,
-        detail: item.detail || '',
-        assignee: item.assignee || '',
-        due: item.due || '',
-        scheduled_for: scheduledFor,
-        recurrence: recurrence,
-        source_channel: source.channel || '',
-        source_user: source.user || '',
-        source_bot_id: source.bot_id || '',
-        source_thread_ts: source.thread_ts || '',
-        source_external_id: source.external_id || '',
-        source_attestation: source.attestation || null,
-        context: contextSnippet
-      });
-    }
-  } catch (err) {
-    if (err.code === 'ERR_CANCELED' || err.name === 'CanceledError' || err.name === 'AbortError') throw err;
-    console.error('Task extraction error:', err.message);
-  }
-}
-
-// Note: silenceBot() and speakInMeeting() removed — output_media handles audio directly
-// via the voice agent webpage and OpenAI Realtime API
-
-// Backfill transcript files that have ended: null using last utterance timestamp.
-// Legacy JSON-volume fixup only — in DB mode transcripts live in Postgres, so this no-ops.
 function backfillTranscriptDates() {
   if (_dbReady) return;
   const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
@@ -8743,29 +7631,8 @@ wss.on('connection', async (ws, req) => {
   // assembly and the OpenAI handshake. Acquiring this later allowed background research to
   // compete during the most latency-sensitive part of meeting reconnect/startup.
   const realtimePriorityLease = interactivePerformance.beginInteractive('realtime');
-  const deferredRealtimeTraces = [];
-  const queueRealtimeTrace = input => {
-    const trace = { ...input, at: input.at || new Date().toISOString() };
-    deferredRealtimeTraces.push(trace);
-    return trace;
-  };
   ws.once('close', () => {
     realtimePriorityLease.release();
-    if (deferredRealtimeTraces.length) {
-      const traces = deferredRealtimeTraces.splice(0);
-      const flush = () => {
-        const priority = interactivePerformance.prioritySnapshot();
-        if (priority.active_interactions > 0 || priority.quiet_remaining_ms > 0) {
-          const timer = setTimeout(flush, Math.max(1000,
-            priority.quiet_remaining_ms || priority.interactive_active_retry_ms));
-          timer.unref?.();
-          return;
-        }
-        try { intelligence.recordTraces(traces); }
-        catch (error) { console.warn('Deferred realtime trace flush failed:', error.message); }
-      };
-      setImmediate(flush);
-    }
   });
 
   // Mark this bot as the active session for dashboard controls (mute and one-on-one).
@@ -8785,7 +7652,7 @@ wss.on('connection', async (ws, req) => {
     ws.send(JSON.stringify({ type: 'nora.mute', muted: !!sessions[botId].muted }));
   }
 
-  // Build the system prompt with memory and context (or the dummy brief for test agents)
+  // Build the system prompt from the current request and meeting context.
   const systemPrompt = realtimePromptForSession(session);
   if (session) session.realtimePromptChars = systemPrompt.length;
   console.log(`📋 System prompt length: ${systemPrompt.length} chars${session?.dummy ? ' (dummy test agent)' : ''}${session?.project_hint ? ` (project hint: ${session.project_hint})` : ''}`);
@@ -8837,7 +7704,7 @@ wss.on('connection', async (ws, req) => {
   const voiceTools = voiceBundle.tools;
 
   // A half-open upstream socket otherwise leaves the meeting UI saying "connected" while no
-  // intelligence is actually listening. Fail visibly and let Recall/browser reconnect cleanly.
+  // the voice provider is actually listening. Fail visibly and let Recall/browser reconnect cleanly.
   const openaiHandshakeTimer = setTimeout(() => {
     if (openaiWs.readyState === WebSocket.CONNECTING) {
       console.error('OpenAI Realtime handshake exceeded 8000ms');
@@ -8876,7 +7743,7 @@ wss.on('connection', async (ws, req) => {
             // gpt-4o-mini-transcribe replaces whisper-1: faster, cheaper, and more accurate on
             // names/jargon — which matters here because this transcript is what she uses to attach
             // NAMES to voices and what the extraction pipeline reads. Better names in = better
-            // name recall + cleaner extracted tasks/memory.
+            // accurate names and cleaner transcripts.
             transcription: { model: 'gpt-4o-mini-transcribe' },
             // Far-field noise reduction: meeting audio comes through laptop/conference-room mics
             // (often across a table), so suppress room noise before VAD/transcription. Cleaner
@@ -8916,7 +7783,7 @@ wss.on('connection', async (ws, req) => {
         // latency is what makes her feel present vs. laggy, and reasoning.effort is the
         // dominant lever (higher = slower to start talking). xhigh was noticeably laggy;
         // medium keeps her sharp enough for spoken PM conversation while starting fast. The
-        // shrunk, relevance-ranked memory prompt also cuts her processing time. Bump to
+        // bounded meeting context also cuts her processing time. Bump to
         // 'high' only if answers feel shallow; she's not doing heavy analysis mid-call.
         reasoning: { effort: 'medium' },
         // Live Teamwork READ tools so she can look things up on the call (status, what's due, who
@@ -8998,11 +7865,6 @@ wss.on('connection', async (ws, req) => {
           s.voiceTranscriptCompletedAt = null;
         }
         abortScreenshareDescriptionForVoice(botId);
-        if (s?.voiceResponseActive) queueRealtimeTrace({ channel: 'meeting', action: 'barge_in',
-          decision: 'yield', confidence: 1, at: new Date().toISOString(),
-          interaction_id: botId,
-          reasons: ['human speech started while Nora was responding',
-            'Realtime interrupt_response enabled'] });
       }
 
       if (msg.type === 'input_audio_buffer.speech_stopped') {
@@ -9025,7 +7887,7 @@ wss.on('connection', async (ws, req) => {
               provider_to_audio: Math.max(0, deliveredAt - s.voiceTriggerAt),
             },
             promptChars: s.realtimePromptChars || systemPrompt.length, interactionId: botId,
-            trigger: s.voiceTriggerReason || 'voice turn', traceSink: queueRealtimeTrace });
+            trigger: s.voiceTriggerReason || 'voice turn' });
           console.log(`🎙️ First audio in ${latencyMs}ms (${s.voiceTriggerReason || 'voice turn'})`);
           if (s.runtimeVoiceActivityId) runtimeActivity.progress(s.runtimeVoiceActivityId, {
             label: 'Speaking in a live meeting',
@@ -9200,7 +8062,7 @@ wss.on('connection', async (ws, req) => {
         signal: promptRefreshController.signal,
       });
       // Silence is a lease, not a one-time observation. Revalidate after recall so an update
-      // cannot land after a person or Nora began speaking while memory was loading.
+      // cannot land after a person or Nora began speaking while context was loading.
       const sendGate = realtimePromptRefreshGate(s);
       if (promptRefreshClosed || promptRefreshController.signal.aborted
         || openaiWs.readyState !== WebSocket.OPEN || !sendGate.allowed) {
@@ -9228,7 +8090,7 @@ wss.on('connection', async (ws, req) => {
           ...(voiceTools.length ? { tools: voiceTools, tool_choice: 'auto' } : {})
         }
       }));
-    console.log('🔄 Refreshed Nora instructions with latest memory');
+    console.log('🔄 Refreshed Nora instructions');
     } catch (error) {
       if (!promptRefreshController?.signal.aborted) {
         if (s) s.realtimePromptRefreshFailures = (s.realtimePromptRefreshFailures || 0) + 1;
@@ -9337,60 +8199,15 @@ async function drainStartupBackgroundTasks({ timeoutMs = 10000 } = {}) {
   if (timer) clearTimeout(timer);
   return drained;
 }
-function backgroundPostWithPriority(post, lease) {
-  return (url, data, config = {}) => post(url, data, { ...config, signal: lease.signal });
-}
-
-// Post-response learning is valuable but never foreground work. Keep one bounded FIFO behind the
-// shared background-provider gate so three extractors from one reply cannot race each other or the
-// next human turn. Foreground preemption leaves the item queued for a later clean attempt.
-const _postInteractionExtractionQueue = [];
-let _postInteractionExtractionBusy = false;
-let _postInteractionExtractionTimer = null;
-let _postInteractionExtractionInFlight = null;
-let _postInteractionExtractionActiveLease = null;
-let _postInteractionExtractionClosing = false;
-const _postInteractionExtractionHealth = {
-  completed: 0, failed: 0, timed_out: 0, preempted: 0, overflow_dropped: 0,
-  shutdown_dropped: 0, shutdown_drain_timeouts: 0,
-  last_failure: null, recent_failures: [],
-};
-function recordPostInteractionExtractionFailure(failure) {
-  _postInteractionExtractionHealth.last_failure = failure;
-  _postInteractionExtractionHealth.recent_failures.push(failure);
-  while (_postInteractionExtractionHealth.recent_failures.length > 20) {
-    _postInteractionExtractionHealth.recent_failures.shift();
-  }
-}
-function postInteractionExtractionTimeoutMs(env = process.env) {
-  const configured = Number(env.NORA_POST_INTERACTION_TIMEOUT_MS);
-  return Number.isFinite(configured) ? Math.max(5000, Math.min(60000, Math.round(configured))) : 30000;
-}
 function backgroundWorkSnapshot() {
-  const active = _postInteractionExtractionBusy ? _postInteractionExtractionQueue[0] : null;
   return {
-    post_interaction: {
-      queued: _postInteractionExtractionQueue.length,
-      busy: _postInteractionExtractionBusy,
-      in_flight: Boolean(_postInteractionExtractionInFlight),
-      closing: _postInteractionExtractionClosing,
-      next: _postInteractionExtractionQueue[0]?.label || null,
-      active_ms: active ? Math.max(0, Date.now() - Number(active.started_at || Date.now())) : 0,
-      oldest_queued_age_ms: _postInteractionExtractionQueue.length
-        ? Math.max(0, Date.now() - Number(_postInteractionExtractionQueue[0].enqueued_at || Date.now())) : 0,
-      timeout_ms: postInteractionExtractionTimeoutMs(),
-      ..._postInteractionExtractionHealth,
-    },
     transcript_checkpoints: {
-      pending: _transcriptCheckpointPending.size + _transcriptEpisodePending.size
-        + _transcriptCheckpointInFlight.size + _transcriptEpisodeInFlight.size,
-      scheduled: _transcriptCheckpointTimers.size + _transcriptEpisodeTimers.size,
+      pending: _transcriptCheckpointPending.size + _transcriptCheckpointInFlight.size,
+      scheduled: _transcriptCheckpointTimers.size,
       transcript_pending: _transcriptCheckpointPending.size,
       transcript_in_flight: _transcriptCheckpointInFlight.size,
       retrying: _transcriptCheckpointAttempts.size,
       maximum_retry_attempt: Math.max(0, ..._transcriptCheckpointAttempts.values()),
-      episode_pending: _transcriptEpisodePending.size,
-      episode_in_flight: _transcriptEpisodeInFlight.size,
       closing: _transcriptCheckpointsClosing,
     },
     screen_share: { ..._screenshareHealth,
@@ -9406,137 +8223,6 @@ function backgroundWorkSnapshot() {
     startup_tasks: startupBackgroundTaskSnapshot(),
   };
 }
-function schedulePostInteractionExtractionDrain(delayMs = 1200) {
-  if (_postInteractionExtractionClosing || _postInteractionExtractionTimer) return;
-  _postInteractionExtractionTimer = setTimeout(() => {
-    _postInteractionExtractionTimer = null;
-    drainPostInteractionExtractionQueue().catch(error =>
-      console.warn('Post-interaction extraction queue failed:', error.message));
-  }, Math.max(100, Number(delayMs) || 1200));
-  _postInteractionExtractionTimer.unref?.();
-}
-function enqueuePostInteractionExtraction(label, run) {
-  if (typeof run !== 'function') return false;
-  if (_postInteractionExtractionClosing) {
-    _postInteractionExtractionHealth.shutdown_dropped += 1;
-    return false;
-  }
-  if (_postInteractionExtractionQueue.length >= 60) {
-    // Never evict index zero while it is executing. Doing that used to make the current
-    // completion shift a second, unrelated item and could silently lose two learning jobs.
-    _postInteractionExtractionQueue.splice(_postInteractionExtractionBusy ? 1 : 0, 1);
-    _postInteractionExtractionHealth.overflow_dropped += 1;
-    console.warn('Post-interaction extraction queue capped; dropped oldest pending item');
-  }
-  _postInteractionExtractionQueue.push({ label: String(label || 'interaction').slice(0, 100),
-    run, enqueued_at: Date.now(), started_at: null });
-  schedulePostInteractionExtractionDrain();
-  return true;
-}
-function drainPostInteractionExtractionQueue({ timeoutMs = postInteractionExtractionTimeoutMs() } = {}) {
-  if (_postInteractionExtractionInFlight) return _postInteractionExtractionInFlight;
-  if (_postInteractionExtractionClosing || !_postInteractionExtractionQueue.length) {
-    return Promise.resolve();
-  }
-  const item = _postInteractionExtractionQueue[0];
-  const lease = beginOptionalBackground(`post-interaction:${item.label}`);
-  if (!lease.allowed) {
-    schedulePostInteractionExtractionDrain(lease.retry_after_ms || 1500);
-    return Promise.resolve();
-  }
-  _postInteractionExtractionBusy = true;
-  _postInteractionExtractionActiveLease = lease;
-  item.started_at = Date.now();
-  const execution = (async () => {
-    let completed = false;
-    try {
-      await runBackgroundActionWithinBudget(`post-interaction:${item.label}`,
-        () => item.run(backgroundPostWithPriority(axios.post, lease)), timeoutMs);
-      completed = true;
-      _postInteractionExtractionHealth.completed += 1;
-    } catch (error) {
-      if (error.code === 'background_step_timeout') {
-        lease.cancel(`post_interaction_timeout:${item.label}`);
-        completed = true;
-        _postInteractionExtractionHealth.timed_out += 1;
-        recordPostInteractionExtractionFailure({
-          label: item.label, code: error.code, message: String(error.message || error).slice(0, 240),
-          at: new Date().toISOString(),
-        });
-        console.warn(`Post-interaction extraction ${item.label} timed out and was dropped:`, error.message);
-      } else if (lease.wasPreempted()) {
-        _postInteractionExtractionHealth.preempted += 1;
-        item.started_at = null;
-      } else {
-        completed = true;
-        _postInteractionExtractionHealth.failed += 1;
-        recordPostInteractionExtractionFailure({
-          label: item.label, code: error.code || null,
-          message: String(error.message || error).slice(0, 240), at: new Date().toISOString(),
-        });
-        console.warn(`Post-interaction extraction ${item.label} failed:`, error.message);
-      }
-    } finally {
-      lease.release();
-      _postInteractionExtractionActiveLease = null;
-      _postInteractionExtractionBusy = false;
-      if (completed) _postInteractionExtractionQueue.shift();
-      if (_postInteractionExtractionQueue.length && !_postInteractionExtractionClosing) {
-        schedulePostInteractionExtractionDrain(completed ? 250 : 1500);
-      }
-    }
-  })();
-  const owned = execution.finally(() => {
-    if (_postInteractionExtractionInFlight === owned) {
-      _postInteractionExtractionInFlight = null;
-    }
-  });
-  _postInteractionExtractionInFlight = owned;
-  return owned;
-}
-
-async function closePostInteractionExtraction({ timeoutMs = 10000 } = {}) {
-  _postInteractionExtractionClosing = true;
-  if (_postInteractionExtractionTimer) clearTimeout(_postInteractionExtractionTimer);
-  _postInteractionExtractionTimer = null;
-  _postInteractionExtractionActiveLease?.cancel('service_shutdown');
-  const active = _postInteractionExtractionInFlight;
-  let settled = true;
-  if (active) {
-    let timer = null;
-    settled = await Promise.race([
-      Promise.resolve(active).then(() => true, () => true),
-      new Promise(resolve => {
-        timer = setTimeout(() => resolve(false), Math.max(1, Number(timeoutMs) || 10000));
-        timer.unref?.();
-      }),
-    ]);
-    if (timer) clearTimeout(timer);
-    if (!settled) _postInteractionExtractionHealth.shutdown_drain_timeouts += 1;
-  }
-  const dropped = _postInteractionExtractionQueue.length;
-  if (dropped) {
-    _postInteractionExtractionHealth.shutdown_dropped += dropped;
-    _postInteractionExtractionQueue.splice(0);
-  }
-  return settled;
-}
-
-function resetPostInteractionExtractionForTest() {
-  if (_postInteractionExtractionTimer) clearTimeout(_postInteractionExtractionTimer);
-  _postInteractionExtractionTimer = null;
-  _postInteractionExtractionQueue.splice(0);
-  _postInteractionExtractionBusy = false;
-  _postInteractionExtractionInFlight = null;
-  _postInteractionExtractionActiveLease = null;
-  _postInteractionExtractionClosing = false;
-  Object.assign(_postInteractionExtractionHealth, {
-    completed: 0, failed: 0, timed_out: 0, preempted: 0, overflow_dropped: 0,
-    shutdown_dropped: 0, shutdown_drain_timeouts: 0,
-    last_failure: null, recent_failures: [],
-  });
-}
-
 function scheduleStartupBackgroundTask(label, delayMs, fn, deferrals = 0) {
   if (_serviceReadiness.phase === 'draining') return;
   const timer = setTimeout(() => {
@@ -9578,19 +8264,11 @@ function closeRuntimeIntervals() {
 async function completePostListenStartup(background) {
   setServiceReadiness('startup_reconciliation');
   console.log('Startup phase: post-listen schema and continuity warmup');
-  // Upgrade the active source of truth only after Postgres hydration. Running this before
-  // hydration upgrades the fallback volume, then immediately replaces it with legacy DB rows.
-  await backfillMemoryIds();
-  await memoryMaintenance.hydrate();
-  const memoryMaintenanceResult = await memoryMaintenance.run();
-  if (memoryMaintenanceResult.ran) {
-    console.log(`Memory maintenance indexed ${memoryMaintenanceResult.examined} records and expired ${memoryMaintenanceResult.expired} stale snapshots`);
-  }
-  console.log('Startup phase: intelligence store init');
-  await intelligence.init();
+  console.log('Startup phase: operational safety store init');
+  await operationStore.init();
   const unleasedRunRecovery = recoverRunBoundLifecycleWithoutLease();
   const staleCycleRecovery = unleasedRunRecovery.recovered
-    ? unleasedRunRecovery : intelligence.recoverStaleCycles({ reason: 'startup_recovery' });
+    ? unleasedRunRecovery : operationStore.recoverStaleCycles({ reason: 'startup_recovery' });
   const restoredRunLock = loadDurableRunLock();
   if (restoredRunLock && Number(restoredRunLock.expires_at) > Date.now()) {
     runtimeActivity.begin({ id: `hourly:${restoredRunLock.holder}`, lane: 'work', kind: 'hourly_run',
@@ -9598,9 +8276,9 @@ async function completePostListenStartup(background) {
       detail: 'The durable operational lease survived this server restart.',
       source: 'startup-recovery', meta: { phase: 'orientation' } });
   }
-  await intelligence.persistStrict();
+  await operationStore.persistStrict();
   if (staleCycleRecovery.recovered) {
-    console.warn(`Recorded ${staleCycleRecovery.recovered} unleased, legacy, or stale intelligence cycle(s) as explicit continuity gaps`);
+    console.warn(`Recorded ${staleCycleRecovery.recovered} unleased, legacy, or stale operation cycle(s) as explicit continuity gaps`);
   }
   try { await mcpManager.migrate(); }
   catch (error) { console.error('MCP credential migration failed; MCP connections will remain unavailable:', error.message); }
@@ -9608,31 +8286,17 @@ async function completePostListenStartup(background) {
   // A run lock can open a cycle immediately after the port becomes reachable. Finish the first
   // authoritative substrate observation soon after listening so that restart and persistence
   // scoring do not depend on a long startup race.
-  beginSomaRuntimeSampling();
   processResources.start();
-  await computeSoma();
   if (background) {
-    // The full research report is intentionally lazy. Warming its CPU-heavy worker during
-    // startup caused multi-second event-loop lag precisely when Slack/Zoom reconnect and
-    // continuity traffic arrive. The progressive dashboard starts it only when the research
-    // section is requested; a live interaction can then preempt it through the v4 firewall.
     scheduleStartupBackgroundTask('startup transcript date backfill', 8000, () => backfillTranscriptDates());
-    // Hydration makes verified prior-build projections immediately readable. Once startup and
-    // connector recovery are quiet, replace them one at a time with current-build projections.
-    // The worker is serialized, low-priority, resource-gated, and preempted by Slack/meetings.
     scheduleRecurringRuntimeJob('recent-meetings-refresh', 10 * 60 * 1000,
       refreshRecentMeetingsCache, { initialDelayMs: 12000, timeoutMs: 30000 });
     scheduleRecurringRuntimeJob('recall-transcript-recovery', 5 * 60 * 1000,
       () => recallTranscriptRecovery.reconcile(), {
         initialDelayMs: 60000, timeoutMs: 120000,
       });
-    scheduleRecurringRuntimeJob('soma-refresh', 60 * 1000, computeSoma, { timeoutMs: 15000 });
-    scheduleRecurringRuntimeJob('daily-memory-maintenance', 60 * 60 * 1000,
-      () => memoryMaintenance.run(), { initialDelayMs: 5 * 60 * 1000, timeoutMs: 60000 });
     scheduleRecurringRuntimeJob('operational-recovery-cycle', 5 * 60 * 1000,
       async ({ run_number: runNumber }) => {
-      // Operational recovery stays frequent and isolated. Research and reflection have their own
-      // cadence so a provider-heavy cognitive cycle cannot turn this lane into an hourly reporter.
       const trigger = runNumber === 1 ? 'startup' : 'five-minute-scheduler';
       const failures = [];
       try { await runHourlyFallbackRuntime({ trigger }); }
@@ -9653,13 +8317,11 @@ async function completePostListenStartup(background) {
 async function start(options = {}) {
   if (_startPromise) return _startPromise;
   _transcriptCheckpointsClosing = false;
-  _postInteractionExtractionClosing = false;
   const background = options.background !== undefined ? options.background : process.env.NORA_TEST_MODE !== '1';
   const port = options.port !== undefined ? options.port : (process.env.PORT || 3000);
   _startPromise = (async () => {
     setServiceReadiness('persistence_initialization');
     fs.mkdirSync(LOCAL_DATA_DIR, { recursive: true });
-    initMemory();
     // Bring Postgres up (migrate + hydrate) BEFORE accepting requests, so no handler ever
     // reads a half-hydrated cache. DB failure preserves the existing JSON fallback.
     await initPersistence();
@@ -9688,7 +8350,6 @@ async function start(options = {}) {
 
 async function stop() {
   setServiceReadiness('draining');
-  _somaNerves.runtimeReady = false;
   // Optional inference is safe to preempt, but it must reach its finally/release boundary before
   // the final persistence flush and database close. Otherwise a provider response can arrive
   // during shutdown and mutate state after the last durable snapshot.
@@ -9698,9 +8359,7 @@ async function stop() {
     console.warn('Background provider drain exceeded 10000ms; continuing bounded shutdown');
   }
   processResources.close();
-  if (_somaLoopTimer) { clearInterval(_somaLoopTimer); _somaLoopTimer = null; }
   closeRuntimeIntervals();
-  if (_embedTimer) { _embedTimer.close?.(); _embedTimer = null; }
   const recurringJobsDrained = await _recurringJobs.drain({ timeoutMs: 10000 });
   if (!recurringJobsDrained) {
     console.warn('Recurring runtime job drain exceeded 10000ms; continuing bounded shutdown');
@@ -9748,13 +8407,9 @@ async function stop() {
   if (meetingWebhookDrain.status === 'rejected' || meetingWebhookDrain.value !== true) {
     console.warn('Acknowledged meeting work drain exceeded 20000ms; continuing bounded shutdown');
   }
-  const postInteractionDrained = await closePostInteractionExtraction({ timeoutMs: 10000 });
-  if (!postInteractionDrained) {
-    console.warn('Post-interaction learning drain exceeded 10000ms; optional learning was dropped');
-  }
   const transcriptDrain = await drainTranscriptCheckpoints().then(() => null, error => error);
   const [persistenceDrain, recentMeetingsDrain] = await Promise.allSettled([
-    intelligence.persistStrict(),
+    operationStore.persistStrict(),
     drainRecentMeetingsRefresh({ timeoutMs: 10000 }),
   ]);
   if (recentMeetingsDrain.status === 'rejected' || recentMeetingsDrain.value !== true) {
@@ -9788,10 +8443,6 @@ module.exports = {
     isTaskEligibleNow,
     buildNoraQueueTaskTool,
     runClaudeToolLoop,
-    markerKeyForFact,
-    computeSalienceForFact,
-    normalizeMemoryRecord,
-    memoryPromptLine,
     containsFinancialContent,
     runtimeSituationalCapabilities,
     SLACK_CONVERSATIONAL_TERMINAL_MS,
@@ -9799,12 +8450,9 @@ module.exports = {
     SLACK_MIN_MODEL_MS,
     SLACK_DELIVERY_FLOOR_MS,
     isLightweightSocialSlackMessage,
-    isRelationalSelfReflectionMessage,
     slackConversationPolicy,
     slackEmptyReplyFallback,
     slackResponseModel,
-    rankLexicalMemories,
-    retrieveInteractiveMemories,
     stripSlackLookupNarration,
     transcriptStartsWith,
     slackThreadHasNoraReply,
@@ -9824,7 +8472,6 @@ module.exports = {
     checkExplicitScheduledWork,
     compileInteractivePersona,
     fitSlackSystemPrompt,
-    buildRecentActivityBlock,
     currentOperationalDefaults,
     voiceEagernessFor,
     settleWithin,
@@ -9835,14 +8482,10 @@ module.exports = {
     normalizeMeetingUrl,
     sanitizeFilename,
     isRunBoundCycle,
-    postInteractionExtractionTimeoutMs,
-    enqueuePostInteractionExtraction,
-    drainPostInteractionExtractionQueue,
     backgroundWorkSnapshot,
     scheduleStartupBackgroundTask,
     startupBackgroundTaskSnapshot,
     drainStartupBackgroundTasks,
-    resetPostInteractionExtractionForTest,
     realtimePromptRefreshGate,
     screenShareVoiceGate,
     processResources,
@@ -9851,7 +8494,7 @@ module.exports = {
     buildSystemPrompt,
     verifySlackRequest,
     verifySlackSignature,
-    intelligenceStore: intelligence,
+    operationStore,
     maybeTriggerVoiceResponse,
     resumePendingVoiceTurn,
     isBenignRealtimeDeleteMissingItemError,
@@ -9861,7 +8504,6 @@ module.exports = {
     beginAcknowledgedMeetingWork,
     acknowledgedMeetingWorkSnapshot,
     drainAcknowledgedMeetingWork,
-    closePostInteractionExtraction,
     mapWithBoundedConcurrency,
     recentMeetingsRefreshSnapshot,
     drainRecentMeetingsRefresh,

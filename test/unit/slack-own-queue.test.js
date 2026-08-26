@@ -87,7 +87,7 @@ test('foreground priority aborts a background tool-loop provider request', async
       signal.addEventListener('abort', () => reject(signal.reason), { once: true });
     }),
   });
-  const reason = new Error('background intelligence preempted by slack');
+  const reason = new Error('background work preempted by slack');
   reason.code = 'background_preempted';
   controller.abort(reason);
   await assert.rejects(pending, error =>

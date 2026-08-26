@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { hourlyFallbackDecision, fallbackForecast, FALLBACK_COOLDOWN_MS,
+const { hourlyFallbackDecision, FALLBACK_COOLDOWN_MS,
   FAILED_FALLBACK_RETRY_MS } =
   require('../../src/runtime/hourly-fallback');
 
@@ -26,7 +26,6 @@ test('fallback becomes due only when the primary is stale and foreground is quie
     lock: { locked: false }, interactive: { active_interactions: 1 },
     admission: { allowed: true } }).reason, 'interactive_priority');
 });
-
 test('hot standby covers a late or failed primary before another hour is lost', () => {
   const quiet = { now, lock: { locked: false },
     interactive: { active_interactions: 0, quiet_remaining_ms: 0 },
@@ -84,23 +83,4 @@ test('failed fallback retries on a shorter bounded backoff', () => {
       started: new Date(now - FAILED_FALLBACK_RETRY_MS - 1).toISOString(),
     }] });
   assert.equal(retry.due, true);
-});
-
-test('fallback forecast is a valid v4 payload without a mature prior', () => {
-  const input = fallbackForecast({ cycleId: 'fallback-cycle', soma: { vitals: {
-    errors10: 0, warns10: 0, onBackup: false, embedBacklog: 0,
-  } } });
-  assert.equal(input.protocol_version, 4);
-  assert.deepEqual([...input.predicted_action_types].sort(),
-    ['explicit_task_check', 'local_task_execution', 'slack_request_recovery']);
-});
-
-test('fallback forecast binds but does not overclaim use of a mature behavioral prior', () => {
-  const commitment = 'a'.repeat(64);
-  const input = fallbackForecast({ cycleId: 'fallback-v7', priorSnapshot: {
-    available: true, prior: { id: 'prior-1', content_commitment: commitment },
-  } });
-  assert.equal(input.protocol_version, 7);
-  assert.equal(input.behavioral_self_prior_commitment, commitment);
-  assert.equal(input.behavioral_self_prior_use.disposition, 'not_relevant');
 });

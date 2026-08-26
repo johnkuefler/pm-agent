@@ -22,7 +22,6 @@ requests and deliberately scheduled tasks using verified provider data.
 - POST /meetings/join: join a meeting when explicitly requested.
 - GET /calendar/status: calendar connection state.
 - GET /admin/mcp: configured Teamwork, calendar, Slack, and other connectors.
-- GET/POST/DELETE /memory: optional durable working context.
 - GET/POST /markers: idempotency receipts for completed operational work.
 
 ## Working rules

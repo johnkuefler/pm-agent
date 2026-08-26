@@ -14,12 +14,9 @@ Object.assign(process.env, {
 });
 
 for (const [name, contents] of Object.entries({
-  'nora-memory.json': '[]',
   'nora-tasks.json': '[]',
   'nora-projects.json': '[]',
   'nora-markers.json': '{}',
-  'nora-dreams.json': '[]',
-  'nora-interactions.json': '[]',
   'nora-routine.md': '# Routine\nInitial routine',
   'transcript-test-bot.json': JSON.stringify({
     bot_id: 'test-bot',
@@ -104,13 +101,7 @@ test('projects preserve Teamwork linkage and planning context', async () => {
   assert.equal((await request('/projects/Launch%20Site', { method: 'DELETE' })).body.ok, true);
 });
 
-test('memory and transcript context remain available', async () => {
-  const memory = await request('/memory', { method: 'POST', body: {
-    fact: 'Acme approvals come from Taylor.', source: 'integration', kind: 'fact',
-  } });
-  assert.equal(memory.response.status, 200);
-  assert.equal((await request('/memory')).body[0].fact, 'Acme approvals come from Taylor.');
-
+test('meeting transcripts remain available', async () => {
   const transcripts = await request('/transcripts?status=ended');
   assert.equal(transcripts.body[0].bot_id, 'test-bot');
   const transcript = await request('/transcripts/test-bot');

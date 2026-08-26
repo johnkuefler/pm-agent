@@ -1,4 +1,4 @@
-// Transcripts
+// Meeting transcripts
     async function loadTranscripts() {
       const list = document.getElementById('transcript-list');
       document.getElementById('transcript-detail').style.display = 'none';

@@ -17,33 +17,6 @@ const { readServerSource } = require('../helpers/server-source');
 
 test.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
 
-test('operational memory facts map to stable marker keys', () => {
-  assert.equal(helpers.markerKeyForFact('Dreamed on 2026-07-10'), 'dreamed:2026-07-10');
-  assert.equal(helpers.markerKeyForFact('Filed transcript bot-123'), 'filed-transcript:bot-123');
-  assert.equal(helpers.markerKeyForFact('Sent warmth to Jane Smith on 2026-07-10'), 'warmth:jane smith:2026-07-10');
-  assert.equal(helpers.markerKeyForFact('The launch is scheduled for Friday'), null);
-});
-
-test('memory salience preserves operational importance', () => {
-  assert.equal(helpers.computeSalienceForFact('The client is furious about the missed deadline', 'auto'), 0.8);
-  assert.equal(helpers.computeSalienceForFact('John prefers Friday updates', 'manual'), 0.7);
-  assert.equal(helpers.computeSalienceForFact('A useful pattern', 'learning'), 0.6);
-  assert.equal(helpers.computeSalienceForFact('Routine observation', 'system'), 0.2);
-});
-
-test('memory carries social and emotional weights into prompt labels', () => {
-  const memory = helpers.normalizeMemoryRecord({
-    fact: 'John was furious after Nora missed a deadline and prefers direct risk flags',
-    source: 'slack',
-    source_ref: { channel: 'slack:DM', id: '123.456' },
-  });
-  assert.ok(memory.social_weight >= 0.65);
-  assert.ok(memory.emotional_weight >= 0.65);
-  const line = helpers.memoryPromptLine(memory);
-  assert.match(line, /socially weighted/);
-  assert.match(line, /emotionally weighted/);
-});
-
 test('financial content detector catches sensitive values without flagging ordinary prose', () => {
   assert.equal(helpers.containsFinancialContent('The project has a $45,000 budget'), true);
   assert.equal(helpers.containsFinancialContent('Our margin is 31%'), true);
@@ -99,9 +72,7 @@ test('meeting video uses plain avatar with dashboard-controlled diagnostics', ()
   assert.doesNotMatch(voiceAgentHtml, /face-blink/);
 });
 
-test('operational grounding augments Nora concise PM voice', () => {
-  const episode = helpers.intelligenceStore.recordEpisodeEvent({ correlation: 'slack:C1:launch', title: 'Launch follow-up', channel: 'slack', actor: 'John', text: 'Can you confirm launch QA?', summary: 'John asked Nora to confirm launch QA.', open_loop: { what: 'Confirm launch QA', owner: 'Nora' } });
-  helpers.intelligenceStore.addCommitment({ what: 'Confirm launch QA', owner: 'Nora', episode_id: episode.id });
+test('the request-driven prompt preserves Nora concise PM voice', () => {
   const prompt = helpers.buildSystemPrompt('slack', null, null, { channel: 'C1', requester: { name: 'John' } }, { conversationText: 'Where are we on launch QA?' });
   assert.match(prompt, /casual, warm, quick/i);
   assert.match(prompt, /project-management assistant/i);
@@ -158,7 +129,7 @@ test('run-bound cycle detection covers durable and pre-durability holder forms',
   assert.equal(helpers.isRunBoundCycle({ kind: 'nightly', holder: 'nora-cowork' }), false);
 });
 
-test('lightweight Slack thanks skip semantic recall without suppressing substantive questions', () => {
+test('lightweight Slack greetings stay bounded without suppressing substantive questions', () => {
   assert.equal(helpers.isLightweightSocialSlackMessage('Thanks for your work today'), true);
   assert.equal(helpers.isLightweightSocialSlackMessage('good night!'), true);
   assert.equal(helpers.isLightweightSocialSlackMessage('Whew, long day'), true);
@@ -175,37 +146,13 @@ test('Slack greetings use bounded conversation and a social empty-response fallb
   const policy = helpers.slackConversationPolicy('Good morning');
   assert.deepEqual(policy, {
     lightweightSocial: true,
-    relationalSelfReflection: false,
     boundedConversation: true,
     attachLiveTools: false,
-    contextTrialsEnabled: false,
-    pmLearningEnabled: false,
   });
   assert.equal(helpers.slackEmptyReplyFallback('Good morning', policy), 'good morning');
   assert.equal(helpers.slackEmptyReplyFallback('Hey there', helpers.slackConversationPolicy('Hey there')), 'hey');
   assert.equal(helpers.slackEmptyReplyFallback('Good morning', policy, { sentSlack: true }), 'Sent.');
   assert.doesNotMatch(helpers.slackEmptyReplyFallback('Good morning', policy), /action|retry|rephrase/i);
-});
-
-test('Slack relational self-reflection is isolated from PM tools and task-performance trials', () => {
-  const exactFailure = 'Does playing the numbers game make you happy?';
-  assert.equal(helpers.isRelationalSelfReflectionMessage(exactFailure), true);
-  assert.deepEqual(helpers.slackConversationPolicy(exactFailure), {
-    lightweightSocial: false,
-    relationalSelfReflection: true,
-    boundedConversation: true,
-    attachLiveTools: false,
-    contextTrialsEnabled: false,
-    pmLearningEnabled: false,
-  });
-  assert.equal(helpers.isRelationalSelfReflectionMessage("How's your Friday been?"), true);
-  assert.equal(helpers.isRelationalSelfReflectionMessage('What are you reading?'), true);
-  assert.equal(helpers.isRelationalSelfReflectionMessage(
-    'I said "Does playing the numbers game make you happy?", not "how is it going".'), true);
-  assert.equal(helpers.isRelationalSelfReflectionMessage('Do you remember what is due tomorrow?'), false);
-  assert.equal(helpers.isRelationalSelfReflectionMessage('Update the launch task, not the brief.'), false);
-  assert.equal(helpers.slackConversationPolicy('What is due tomorrow?').attachLiveTools, true);
-  assert.equal(helpers.slackConversationPolicy('What is due tomorrow?').contextTrialsEnabled, true);
 });
 
 test('runtime situational affordances stay within the committed sixty-capability bound', () => {
@@ -232,10 +179,7 @@ test('bounded social turns expose a truthful no-tools affordance frame', () => {
   });
   assert.equal(capabilities.length, 8);
   assert.equal(capabilities.some(item => item.key.startsWith('mcp:')), false);
-  // Every live tool is genuinely withheld on this turn. What is NOT withheld is the thing she is
-  // actually doing: replying from memory and the conversation. Omitting it produced a frame with
-  // no present capability at all, which the receipt validator rejects, so the frame was dropped on
-  // every greeting instead of reaching the prompt.
+  // Every live tool is withheld, while replying to the current conversation remains available.
   const reply = capabilities.find(item => item.key === 'conversational_reply');
   assert.equal(reply.availability, 'available');
   const withheld = capabilities.filter(value =>
@@ -257,15 +201,5 @@ test('missing Slack reaction scope is cached and degrades without repeated API f
   assert.equal(second.reason, 'missing_scope_cached');
   assert.equal(calls, 1);
   helpers.resetSlackReactionCapabilityForTest();
-});
-
-test('Slack post-response extraction uses parameters carried through the handler', () => {
-  const source = readServerSource();
-  const start = source.indexOf('async function handleSlackImpl');
-  const end = source.indexOf('\nasync function ', start + 20);
-  const handler = source.slice(start, end < 0 ? source.length : end);
-  assert.match(handler, /external_id: triggerTs \|\| null/);
-  assert.match(handler, /attestation: sourceAttestation/);
-  assert.doesNotMatch(handler, /\bevent\.ts\b|\bslackVerification\b/);
 });
 

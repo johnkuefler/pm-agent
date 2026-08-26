@@ -5,8 +5,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const guard = require('../../src/intelligence/execution-claim-guard');
-const { createIntelligenceStore } = require('../../src/intelligence/store');
+const guard = require('../../src/runtime/execution-claim-guard');
+const { createOperationStore } = require('../../src/runtime/operation-store');
 
 function execution(overrides = {}) {
   return {
@@ -66,7 +66,7 @@ test('guard distinguishes external execution from ordinary thinking and handles 
 test('claim attestations retain commitments rather than response text and fail closed under tampering', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-action-claim-'));
   let tick = 0;
-  const store = createIntelligenceStore({ filePath: path.join(dir, 'state.json'), db: {},
+  const store = createOperationStore({ filePath: path.join(dir, 'state.json'), db: {},
     isDbReady: () => false,
     clock: () => new Date(Date.parse('2026-07-16T20:00:00.000Z') + tick++ * 1000) });
   await store.init();
@@ -103,7 +103,7 @@ test('claim attestations retain commitments rather than response text and fail c
   assert.equal(noClaimAttestation.audit.complete_chain_verified, true);
   assert.doesNotMatch(JSON.stringify(store.snapshot()), /CLIENT SECRET TASK|PRIVATE PROVIDER RESULT|revised due date/);
 
-  const agency = store.agencySnapshot();
+  const agency = store.actionSnapshot();
   assert.equal(agency.report.replay_valid_action_claim_attestations, 3);
   assert.equal(agency.report.verified_completion_claims, 1);
   assert.equal(agency.report.blocked_unverified_completion_claims, 1);

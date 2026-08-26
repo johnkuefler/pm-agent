@@ -4,7 +4,7 @@
 // exceed the budget, something has to give, and WHAT gives matters: required constraints outrank
 // linked page content, which outranks conversational context. This module owns that ordering.
 
-const interactivePerformance = require('../../intelligence/interactive-performance');
+const interactivePerformance = require('../../runtime/interactive-performance');
 
 function fitSlackSystemPrompt(stable, volatile, optionalLinked = '',
   maxChars = interactivePerformance.PROMPT_BUDGET_CHARS.slack) {

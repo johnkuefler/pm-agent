@@ -139,7 +139,7 @@ const MEASUREMENT_ONLY_RUNTIME = {
       { code: 'interactive_prompt_failing', message: 'A human-facing response surface is exceeding its prompt-size gate.' },
     ],
   },
-  background_work: { transcript_checkpoints: {}, post_interaction: { queued: 0, busy: false } },
+  background_work: { transcript_checkpoints: {} },
   requests: {},
 };
 

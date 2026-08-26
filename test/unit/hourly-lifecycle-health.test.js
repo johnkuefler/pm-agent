@@ -91,6 +91,6 @@ test('native Railway coverage becomes the effective healthy hourly runner', () =
 
 test('runtime health exposes hourly cadence without a dedicated live dashboard', () => {
   const server = readServerSource();
-  assert.match(server, /hourly_lifecycle: hourlyLifecycleHealth\(intelligence\.list\('cycles'\)\)/);
+  assert.match(server, /hourly_lifecycle: hourlyLifecycleHealth\(operationStore\.list\('cycles'\)\)/);
   assert.equal(fs.existsSync(path.join(__dirname, '..', '..', 'public', 'js', 'dashboard-activity.js')), false);
 });

@@ -17,7 +17,7 @@ function healthySnapshot() {
       realtime: { gate: 'collecting', prompt_gate: 'collecting' },
     } },
     interactive_priority: { background_budget_cancellations: 0 },
-    background_work: { post_interaction: { queued: 0 },
+    background_work: {
       transcript_checkpoints: { pending: 0, retrying: 0, maximum_retry_attempt: 0 },
       recurring_jobs: { jobs: [] }, startup_tasks: { active: [], recent_failures: [] },
       slack_webhook_events: { active_count: 0, oldest_active_ms: 0, recent_failures: [] },
@@ -28,7 +28,6 @@ function healthySnapshot() {
       memory_queue: { queued: 0 } },
     process_health: { state: 'running', fatal: false },
     hourly_lifecycle: { state: 'fresh', latest: { status: 'completed' } },
-    research_projections: {},
     process_resources: { memory: { heap_utilization: 0.1, constrained_rss_utilization: 0.2 },
       event_loop: { current_window: { p99_ms: 20, max_ms: 30 }, last_complete_window: null } },
     realtime_transport: { recent_stale: [], response_watchdog: { recent_timeouts: [] } },
@@ -139,9 +138,9 @@ test('reliability escalates repeated transcript checkpoint persistence failure',
 
 test('reliability surfaces active and completed request deadline pressure', () => {
   const snapshot = healthySnapshot();
-  snapshot.requests.active.push({ path: '/intelligence/cycles', age_ms: 40000, deadline_ms: 45000 });
+  snapshot.requests.active.push({ path: '/tasks/task-1', age_ms: 40000, deadline_ms: 45000 });
   snapshot.requests.recent_deadline_exceeded.push({
-    path: '/self-model/forecast-prior', at: '2026-07-22T18:58:00.000Z',
+    path: '/tasks/task-1', at: '2026-07-22T18:58:00.000Z',
   });
   const verdict = assessRuntimeReliability(snapshot, { now });
   assert.equal(verdict.status, 'degraded');
@@ -149,8 +148,8 @@ test('reliability surfaces active and completed request deadline pressure', () =
     ['recent_request_deadline', 'requests_nearing_deadline']);
 
   snapshot.requests.recent_deadline_exceeded.push(
-    { path: '/cognition', at: '2026-07-22T18:57:00.000Z' },
-    { path: '/expectations', at: '2026-07-22T18:56:00.000Z' });
+    { path: '/meetings/join', at: '2026-07-22T18:57:00.000Z' },
+    { path: '/transcripts', at: '2026-07-22T18:56:00.000Z' });
   const repeated = assessRuntimeReliability(snapshot, { now });
   assert.equal(repeated.status, 'action_required');
   assert.equal(repeated.action_required[0].code, 'repeated_request_deadlines');
@@ -213,7 +212,7 @@ test('fatal process recovery is visible as action required during its drain wind
 test('recurring jobs surface transient pressure and escalate repeated failure or a stuck run', () => {
   const transient = healthySnapshot();
   transient.background_work.recurring_jobs.jobs.push({
-    name: 'operational-and-intelligence-cycle',
+    name: 'operational-recovery-cycle',
     interval_ms: 300000,
     running: false,
     consecutive_failures: 1,
@@ -230,7 +229,7 @@ test('recurring jobs surface transient pressure and escalate repeated failure or
 
   const stuck = healthySnapshot();
   stuck.background_work.recurring_jobs.jobs.push({
-    name: 'soma-refresh',
+    name: 'transcript-recovery',
     interval_ms: 60000,
     running: true,
     last_started_at: new Date(now - 120001).toISOString(),
@@ -239,7 +238,7 @@ test('recurring jobs surface transient pressure and escalate repeated failure or
   });
   verdict = assessRuntimeReliability(stuck, { now });
   assert.equal(verdict.status, 'action_required');
-  assert.equal(verdict.action_required[0].job, 'soma-refresh');
+  assert.equal(verdict.action_required[0].job, 'transcript-recovery');
 });
 
 test('recurring job health clears after a successful fast cycle', () => {
@@ -258,7 +257,7 @@ test('recurring job health clears after a successful fast cycle', () => {
 test('recurring job timeout quarantine is degraded before becoming stuck', () => {
   const snapshot = healthySnapshot();
   snapshot.background_work.recurring_jobs.jobs.push({
-    name: 'stale-research-projection-refresh',
+    name: 'transcript-recovery',
     interval_ms: 300000,
     running: false,
     blocked_by_timed_out_execution: true,
@@ -297,40 +296,6 @@ test('startup task stalls and failures remain visible until recovery settles', (
   assert.equal(assessRuntimeReliability(failed, { now }).status, 'degraded');
 });
 
-test('slow and repeatedly failing research projections escalate without taxing live requests', () => {
-  const slow = healthySnapshot();
-  slow.research_projections.research_status = {
-    in_flight: true, consecutive_failures: 0,
-    last_refresh_started_at: new Date(now - (2 * 60 * 1000 + 1)).toISOString(),
-  };
-  const degraded = assessRuntimeReliability(slow, { now });
-  assert.equal(degraded.status, 'degraded');
-  assert.equal(degraded.degraded[0].code, 'research_projection_recovering');
-
-  slow.research_projections.research_status.last_refresh_started_at =
-    new Date(now - 166000).toISOString();
-  const stuck = assessRuntimeReliability(slow, { now });
-  assert.equal(stuck.status, 'action_required');
-  assert.equal(stuck.action_required[0].code, 'research_projection_stuck');
-
-  const failed = healthySnapshot();
-  failed.research_projections.self_model = { in_flight: false, consecutive_failures: 3 };
-  assert.equal(assessRuntimeReliability(failed, { now }).status, 'action_required');
-});
-
-test('queued research projections are not called stuck before their worker starts', () => {
-  const queued = healthySnapshot();
-  queued.research_projections.research_status = {
-    in_flight: true,
-    last_refresh_started_at: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
-    worker_started_at: null,
-    consecutive_failures: 0,
-  };
-  const verdict = assessRuntimeReliability(queued);
-  assert.equal(verdict.degraded.some(item => item.code === 'research_projection_recovering'), false);
-  assert.equal(verdict.action_required.some(item => item.code === 'research_projection_stuck'), false);
-});
-
 test('process memory and event-loop pressure escalate before requests time out', () => {
   const delayed = healthySnapshot();
   delayed.process_resources.event_loop.current_window = { p99_ms: 300, max_ms: 800 };
@@ -350,20 +315,13 @@ test('process memory and event-loop pressure escalate before requests time out',
   assert.equal(verdict.action_required[0].code, 'critical_process_memory_pressure');
 });
 
-test('post-interaction timeouts and resource shedding remain visible without failing live service', () => {
+test('resource shedding remains visible without failing live service', () => {
   const snapshot = healthySnapshot();
-  snapshot.background_work.post_interaction = {
-    queued: 1, busy: true, active_ms: 9000, timeout_ms: 10000,
-    recent_failures: [{ code: 'background_step_timeout', at: '2026-07-22T19:59:00.000Z' }],
-  };
   snapshot.background_admission = { allowed: false, reason: 'event_loop_pressure' };
   const verdict = assessRuntimeReliability(snapshot, {
     now: new Date('2026-07-22T20:00:00.000Z').getTime(),
   });
-  assert.equal(verdict.status, 'degraded');
-  assert.deepEqual(verdict.degraded.map(item => item.code), [
-    'post_interaction_learning_failure', 'post_interaction_learning_near_timeout',
-  ]);
+  assert.equal(verdict.status, 'healthy');
   assert.ok(verdict.observations.some(item => item.code === 'background_resource_shedding'));
 });
 

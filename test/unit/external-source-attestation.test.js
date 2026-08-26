@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
-const attestation = require('../../src/intelligence/external-source-attestation');
+const attestation = require('../../src/runtime/source-attestation');
 
 function signedSlackRequest(overrides = {}) {
   const body = overrides.body || { type: 'event_callback', event_id: 'Ev-1', team_id: 'T1', event_time: 1783960200,

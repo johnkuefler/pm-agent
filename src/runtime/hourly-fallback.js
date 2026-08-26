@@ -59,68 +59,9 @@ function hourlyFallbackDecision({ cycles = [], primaryHealth = null, lock = null
       ? 'primary_scheduler_late' : 'primary_scheduler_stale' };
 }
 
-function probability(value, fallback = 0.1) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) return fallback;
-  return Math.max(0, Math.min(1, number));
-}
-
-function fallbackForecast({ cycleId, priorSnapshot = null, soma = null } = {}) {
-  if (!String(cycleId || '').trim()) throw new Error('fallback forecast requires cycleId');
-  const vitals = soma?.vitals || {};
-  const errorProbability = vitals.errors10 == null ? 0.2 : probability(Number(vitals.errors10) > 0, 0.2);
-  const warningProbability = vitals.warns10 == null ? 0.2 : probability(Number(vitals.warns10) > 0, 0.2);
-  const backlogProbability = vitals.embedBacklog == null ? 0.1
-    : probability(Number(vitals.embedBacklog) > 0, 0.1);
-  const control = 0.82;
-  const confidence = 0.72;
-  const prior = priorSnapshot?.available && priorSnapshot?.prior
-    ? priorSnapshot.prior : null;
-  const protocolVersion = prior ? 7 : 4;
-  return {
-    protocol_version: protocolVersion,
-    predicted_action_types: ['explicit_task_check', 'slack_request_recovery', 'local_task_execution'],
-    surprise_probability: 0.2,
-    control_at_close: control,
-    confidence,
-    self_state_prediction: {
-      attention_slot_types_at_close: ['explicit_task_check'],
-      appraisal_at_close: {
-        valence: 0.55, arousal: 0.22, control, social_safety: 0.9, coherence: 0.86,
-      },
-      expected_action_count: 1,
-      reentry_probability: 0.05,
-    },
-    metacognitive_prediction: {
-      predicted_success_probability: confidence,
-      predicted_largest_error_domain: 'action_types',
-    },
-    substrate_prediction: {
-      error_probability: errorProbability,
-      warning_probability: warningProbability,
-      backup_probability: probability(Boolean(vitals.onBackup), 0),
-      embedding_backlog_probability: backlogProbability,
-      restart_probability: 0.05,
-    },
-    ...(prior ? {
-      behavioral_self_prior_commitment: prior.content_commitment,
-      behavioral_self_prior_use: {
-        disposition: 'not_relevant', estimate_refs: [],
-        rationale: 'This constrained recovery pass is selected by scheduler health, not by the historical action prior.',
-      },
-    } : {}),
-    rationale: 'The primary scheduler is late or stale, so Railway may recover one direct Slack request or execute at most one explicitly queued local task.',
-    evidence: [
-      { type: 'intelligence_cycle', id: String(cycleId) },
-      ...(prior ? [{ type: 'behavioral_self_prior', id: prior.content_commitment }] : []),
-    ],
-  };
-}
-
 module.exports = {
   FALLBACK_COOLDOWN_MS,
   FAILED_FALLBACK_RETRY_MS,
   latestFallbackCycle,
   hourlyFallbackDecision,
-  fallbackForecast,
 };

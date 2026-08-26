@@ -8,8 +8,8 @@ const { createRequestPerformanceMonitor, normalizePath } = require('../../src/ru
 
 test('request performance monitor records bounded normalized route timings', async () => {
   const monitor = createRequestPerformanceMonitor({ slowMs: 0, maxRoutes: 2, maxSlowEvents: 2 });
-  const req = { method: 'POST', path: '/intelligence/cycles/run-1234567890123456/self-forecast',
-    originalUrl: '/intelligence/cycles/run-1234567890123456/self-forecast?secret=nope' };
+  const req = { method: 'PATCH', path: '/tasks/task-1234567890123456',
+    originalUrl: '/tasks/task-1234567890123456?secret=nope' };
   const res = new EventEmitter();
   res.statusCode = 200;
   monitor.middleware(req, res, () => {});
@@ -17,14 +17,14 @@ test('request performance monitor records bounded normalized route timings', asy
   const snapshot = monitor.snapshot();
   assert.equal(snapshot.active_requests, 0);
   assert.equal(snapshot.routes.length, 1);
-  assert.equal(snapshot.routes[0].path, '/intelligence/cycles/:id/self-forecast');
+  assert.equal(snapshot.routes[0].path, '/tasks/:id');
   assert.equal(snapshot.recent_slow_requests.length, 1);
   assert.doesNotMatch(JSON.stringify(snapshot), /secret/);
 });
 
 test('route templates take precedence over concrete ids', () => {
-  assert.equal(normalizePath({ route: { path: '/cycles/:id' }, baseUrl: '/intelligence' }),
-    '/intelligence/cycles/:id');
+  assert.equal(normalizePath({ route: { path: '/:id' }, baseUrl: '/tasks' }),
+    '/tasks/:id');
 });
 
 test('intentional event streams do not become false slow-request alarms', () => {
@@ -46,7 +46,7 @@ test('ordinary API requests receive a terminal deadline and abort signal', async
   const monitor = createRequestPerformanceMonitor({ slowMs: 1000, deadlineMs: 10 });
   const req = new EventEmitter();
   req.method = 'POST';
-  req.path = '/intelligence/cycles/cycle-1234567890123456/self-forecast';
+  req.path = '/tasks/task-1234567890123456';
   const res = new EventEmitter();
   res.statusCode = 200;
   res.headersSent = false;
@@ -80,20 +80,6 @@ test('event streams are explicitly excluded from terminal request deadlines', ()
   assert.equal(timerCreated, false);
   assert.equal(monitor.snapshot().active[0].deadline_ms, null);
   res.emit('close');
-});
-
-test('isolated heavy projection reads receive the long non-interactive deadline', () => {
-  const monitor = createRequestPerformanceMonitor({ deadlineMs: 10, longDeadlineMs: 120 });
-  for (const path of ['/self-model', '/cognition', '/consciousness-research/status']) {
-    const req = new EventEmitter();
-    req.method = 'GET';
-    req.path = path;
-    const res = new EventEmitter();
-    res.statusCode = 200;
-    monitor.middleware(req, res, () => {});
-    assert.equal(monitor.snapshot().active.at(-1).deadline_ms, 120);
-    res.emit('finish');
-  }
 });
 
 test('a genuinely hung Express handler returns a retryable 504', async () => {

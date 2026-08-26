@@ -2,11 +2,11 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createIntelligenceStore, emptyState } = require('../../src/intelligence/store');
+const { createOperationStore, emptyState } = require('../../src/runtime/operation-store');
 const db = require('../../db');
 
-test('strict intelligence persistence has a bounded wait even when the database write wedges', async () => {
-  const store = createIntelligenceStore({
+test('strict operation persistence has a bounded wait even when the database write wedges', async () => {
+  const store = createOperationStore({
     filePath: null,
     initialState: emptyState(),
     isDbReady: () => true,
@@ -14,7 +14,7 @@ test('strict intelligence persistence has a bounded wait even when the database 
     strictPersistenceTimeoutMs: 30,
   });
   await assert.rejects(store.persistStrict(), error => {
-    assert.equal(error.code, 'INTELLIGENCE_PERSISTENCE_TIMEOUT');
+    assert.equal(error.code, 'OPERATION_PERSISTENCE_TIMEOUT');
     assert.match(error.message, /exceeded 30ms/);
     return true;
   });

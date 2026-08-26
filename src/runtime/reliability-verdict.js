@@ -1,8 +1,6 @@
 'use strict';
 
 const RECENT_SLOW_WINDOW_MS = 15 * 60 * 1000;
-const PROJECTION_SLOW_REFRESH_MS = 2 * 60 * 1000;
-const PROJECTION_STUCK_REFRESH_MS = 165 * 1000;
 
 function recentSlowRequests(requests, now) {
   return (requests?.recent_slow_requests || []).filter(item => {
@@ -38,7 +36,6 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
   const realtimeTransport = snapshot.realtime_transport || {};
   const deferredJobs = snapshot.deferred_jobs || {};
   const processHealth = snapshot.process_health || {};
-  const researchProjections = snapshot.research_projections || {};
   const processResources = snapshot.process_resources || {};
   const hourlyLifecycle = snapshot.hourly_lifecycle || {};
 
@@ -129,23 +126,6 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
       failure_reason: hourlyLifecycle.latest.failure_reason || null,
       message: 'The latest hourly lifecycle failed; cadence remains observable.' });
   }
-  for (const [projection, runtime] of Object.entries(researchProjections)) {
-    const failures = Number(runtime?.consecutive_failures) || 0;
-    const workerStartKnown = Object.prototype.hasOwnProperty.call(runtime || {}, 'worker_started_at');
-    const startedAt = new Date(workerStartKnown
-      ? runtime.worker_started_at || 0 : runtime?.last_refresh_started_at || 0).getTime();
-    const inFlightAgeMs = runtime?.in_flight && Number.isFinite(startedAt) && startedAt > 0
-      ? Math.max(0, (Number(now) || Date.now()) - startedAt) : 0;
-    if (failures >= 3 || inFlightAgeMs >= PROJECTION_STUCK_REFRESH_MS) {
-      actionRequired.push({ code: 'research_projection_stuck', projection,
-        count: failures || undefined, age_ms: inFlightAgeMs || undefined,
-        message: `${projection} cannot complete its isolated background projection.` });
-    } else if (failures > 0 || inFlightAgeMs >= PROJECTION_SLOW_REFRESH_MS) {
-      degraded.push({ code: 'research_projection_recovering', projection,
-        count: failures || undefined, age_ms: inFlightAgeMs || undefined,
-        message: `${projection} is slow or backing off in its isolated background lane.` });
-    }
-  }
   const memory = processResources.memory || {};
   const memoryPressure = Math.max(Number(memory.heap_utilization) || 0,
     Number(memory.constrained_rss_utilization) || 0);
@@ -204,11 +184,10 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
     degraded.push({ code: 'persistence_backlog', count: Number(persistence.pending_revisions) || 0,
       message: 'State persistence has a meaningful foreground backlog.' });
   }
-  const backgroundQueued = Number(background.post_interaction?.queued) || 0;
   const transcriptCheckpoints = background.transcript_checkpoints || {};
   const checkpointPending = Number(transcriptCheckpoints.pending) || 0;
-  if (backgroundQueued + checkpointPending > 5) {
-    degraded.push({ code: 'background_backlog', count: backgroundQueued + checkpointPending,
+  if (checkpointPending > 5) {
+    degraded.push({ code: 'background_backlog', count: checkpointPending,
       message: 'Deferred background work is accumulating.' });
   }
   if (Number(transcriptCheckpoints.maximum_retry_attempt) >= 3) {
@@ -271,22 +250,6 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
       age_ms: Number(recentMeetingsCache.active_ms) || undefined,
       message: 'The recent-meetings cache is slow or has a current refresh failure.' });
   }
-  const postInteraction = background.post_interaction || {};
-  const recentPostInteractionFailures = (postInteraction.recent_failures || []).filter(item => {
-    const at = new Date(item?.at || 0).getTime();
-    return Number.isFinite(at) && at > 0 && assessedAt - at <= RECENT_SLOW_WINDOW_MS;
-  });
-  if (recentPostInteractionFailures.length) {
-    degraded.push({ code: 'post_interaction_learning_failure',
-      count: recentPostInteractionFailures.length,
-      message: 'Optional post-response learning recently timed out or failed; live replies remained available.' });
-  }
-  if (postInteraction.busy && Number(postInteraction.timeout_ms) > 0
-    && Number(postInteraction.active_ms) >= Number(postInteraction.timeout_ms) * 0.8) {
-    degraded.push({ code: 'post_interaction_learning_near_timeout',
-      age_ms: Number(postInteraction.active_ms),
-      message: 'A post-response learning job is nearing its cancellation budget.' });
-  }
   if (backgroundAdmission.allowed === false) {
     observations.push({ code: 'background_resource_shedding', reason: backgroundAdmission.reason,
       message: 'Optional background work is paused to preserve foreground responsiveness.' });
@@ -342,5 +305,4 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
   };
 }
 
-module.exports = { assessRuntimeReliability, RECENT_SLOW_WINDOW_MS,
-  PROJECTION_SLOW_REFRESH_MS, PROJECTION_STUCK_REFRESH_MS, recentRequestDeadlines };
+module.exports = { assessRuntimeReliability, RECENT_SLOW_WINDOW_MS, recentRequestDeadlines };

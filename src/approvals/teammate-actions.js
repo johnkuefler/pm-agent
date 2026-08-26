@@ -1,6 +1,6 @@
 'use strict';
 
-const { canonicalJson, hash } = require('../intelligence/external-source-attestation');
+const { canonicalJson, hash } = require('../runtime/source-attestation');
 
 const STATE_KEY = 'teammate_action_approvals_v1';
 const OPEN_STATES = new Set(['proposed', 'approved', 'executing']);
