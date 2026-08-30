@@ -19,6 +19,10 @@ test('scheduled work executes only explicit due tasks', () => {
   assert.match(routine, /Deliver only when requested/);
   assert.match(routine, /Do not send project alerts, blocker notices, status nudges/);
   assert.doesNotMatch(routine, /Maintain project plans|Reconcile active Teamwork projects/);
+  for (const source of [routine, cowork, harness]) {
+    assert.match(source, /GET \/tasks\/:id\/slack-source\?since=/);
+    assert.match(source, /task-scoped|fixed on that task/i);
+  }
 });
 
 test('scheduled Slack delivery is bot-only and task-scoped', () => {

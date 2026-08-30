@@ -52,6 +52,7 @@ PUT /projects/:name
 DELETE /projects/:name
 GET /tasks
 GET /tasks/:id
+GET /tasks/:id/slack-source
 POST /tasks
 PATCH /tasks/:id/complete
 POST /tasks/:id/deliver

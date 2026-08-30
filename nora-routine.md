@@ -16,6 +16,8 @@ run lock, stop.
 - Follow the task's exact instruction and stay within its named project, people, dates, and
   delivery destination.
 - Read only the provider data needed to complete or verify that instruction.
+- When a due task records `metadata.slack_read_channel`, read only that fixed channel through
+  `GET /tasks/:id/slack-source?since=...`. Never substitute another channel or omit the date bound.
 - Do not perform adjacent cleanup, project reconciliation, status chasing, risk discovery, or
   unsolicited follow-up.
 - Use the connected Teamwork, calendar, meeting, or file tools needed for the task.

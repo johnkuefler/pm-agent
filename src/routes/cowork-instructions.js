@@ -19,6 +19,8 @@ requests and deliberately scheduled tasks using verified provider data.
 - GET/POST/PATCH/DELETE /tasks: Nora's local scheduled and recurring task queue.
 - POST /tasks/:id/deliver: the only allowed scheduled Slack delivery route. It uses the Nora bot,
   fixes the destination from the task, stores the provider receipt, and completes the task.
+- GET /tasks/:id/slack-source?since=DATE: read the one Slack evidence channel fixed on that task.
+  A date bound is required. The caller cannot choose or substitute a channel.
 - GET/POST/PATCH/DELETE /projects: local project context and Teamwork linkage.
 - GET /transcripts and GET /transcripts/:botId: completed Recall transcripts.
 - POST /meetings/join: join a meeting when explicitly requested.
@@ -30,6 +32,8 @@ requests and deliberately scheduled tasks using verified provider data.
 
 - Read before writing. Use provider state as the source of truth.
 - Do not scan Teamwork, Slack, Gmail, calendars, projects, or transcripts to discover work.
+- A due task with metadata.slack_read_channel may read only that channel through the task-scoped
+  Slack source API. This is evidence for explicit work, not inbox monitoring or discovery.
 - Make only the requested change. Do not add adjacent cleanup, reconciliation, status chasing,
   nudges, reminders, or improvements.
 - Never report a Teamwork, calendar, Slack, or meeting action as complete until its write

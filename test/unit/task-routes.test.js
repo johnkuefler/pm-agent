@@ -7,7 +7,7 @@ const { registerTaskRoutes } = require('../../src/routes/registerTaskRoutes');
 function harness(seed = [], overrides = {}) {
   const routes = new Map();
   let tasks = seed.map(item => ({ ...item }));
-  const calls = { created: [], completed: [], deleted: [], deliveries: [] };
+  const calls = { created: [], completed: [], deleted: [], deliveries: [], slackReads: [] };
   const app = {};
   for (const method of ['get', 'post', 'patch', 'delete', 'put']) {
     app[method] = (path, ...handlers) => routes.set(`${method}:${path}`, handlers.at(-1));
@@ -30,6 +30,11 @@ function harness(seed = [], overrides = {}) {
       calls.deliveries.push({ channel, text, threadTs });
       return { ok: true, channel, ts: '1787769000.001' };
     },
+    readSlackSource: async (channel, options) => {
+      calls.slackReads.push({ channel, options });
+      return { channel_id: channel, channel_name: 'int-sales', count: 1,
+        messages: [{ ts: '1', text: 'Acme moved to Closed Won' }] };
+    },
     ...overrides,
   });
   return { routes, calls, getTasks: () => tasks };
@@ -39,7 +44,9 @@ function response() {
   return {
     statusCode: 200,
     body: null,
+    headers: {},
     status(value) { this.statusCode = value; return this; },
+    set(name, value) { this.headers[name] = value; return this; },
     json(value) { this.body = value; return this; },
   };
 }
@@ -204,4 +211,54 @@ test('task update accepts the metadata destination shape used by scheduled runne
 
   assert.equal(res.statusCode, 200);
   assert.equal(ctx.getTasks()[0].metadata.destination_channel, 'C031HHSBM1Q');
+});
+
+test('task-scoped Slack source reads only the channel fixed on the task', async () => {
+  const task = { id: 'task-agenda', action: 'Prepare agenda', status: 'pending',
+    metadata: { slack_read_channel: 'C07NMUBDP1R' } };
+  const ctx = harness([task]);
+  const res = response();
+
+  await ctx.routes.get('get:/tasks/:id/slack-source')({
+    params: { id: task.id }, query: { since: '2026-08-19', limit: '100' },
+  }, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.channel_name, 'int-sales');
+  assert.deepEqual(ctx.calls.slackReads, [{
+    channel: 'C07NMUBDP1R',
+    options: { since: '2026-08-19', until: null, limit: '100' },
+  }]);
+  assert.equal(res.headers['Cache-Control'], 'private, no-store');
+});
+
+test('task-scoped Slack source refuses tasks without an approved channel', async () => {
+  const task = { id: 'task-no-source', action: 'Prepare agenda', status: 'pending' };
+  const ctx = harness([task]);
+  const res = response();
+
+  await ctx.routes.get('get:/tasks/:id/slack-source')({
+    params: { id: task.id }, query: { since: '2026-08-19' },
+  }, res);
+
+  assert.equal(res.statusCode, 409);
+  assert.match(res.body.error, /no fixed Slack read source/);
+  assert.equal(ctx.calls.slackReads.length, 0);
+});
+
+test('task update records a validated Slack read source without changing its destination', () => {
+  const task = { id: 'task-source-repair', action: 'Prepare agenda', status: 'pending',
+    metadata: { destination_channel: 'C07PV5G7T2N' } };
+  const ctx = harness([task]);
+  const res = response();
+
+  ctx.routes.get('put:/tasks/:id')({
+    params: { id: task.id },
+    body: { metadata: { slack_read_channel: 'C07NMUBDP1R' } },
+  }, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(ctx.getTasks()[0].metadata, {
+    destination_channel: 'C07PV5G7T2N', slack_read_channel: 'C07NMUBDP1R',
+  });
 });

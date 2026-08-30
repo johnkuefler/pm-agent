@@ -5,6 +5,7 @@
 // above stays pure and the handler above that stays about conversation rather than transport.
 
 const axios = require('axios');
+const { slackMessageAllText } = require('./conversation-policy');
 const { SLACK_TABLE_FORMATTING_INSTRUCTION, normalizeSlackMrkdwn,
   formatSlackMessagePayload } = require('./table-format');
 
@@ -211,6 +212,90 @@ async function postSlackMessageReceipt(target, text, threadTs, { post = axios.po
     ts: r.data?.ts || null, error: r.data?.error || null };
 }
 
+function slackHistoryBoundary(value, field) {
+  if (value == null || value === '') return null;
+  const raw = String(value).trim();
+  if (/^\d+(?:\.\d+)?$/.test(raw)) return raw;
+  const date = new Date(raw);
+  if (!Number.isFinite(date.getTime())) {
+    const error = new Error(`${field} must be a valid date, timestamp, or Slack message timestamp`);
+    error.statusCode = 400;
+    throw error;
+  }
+  return (date.getTime() / 1000).toFixed(6);
+}
+
+async function readSlackChannelWindow(channel, {
+  since = null, until = null, limit = 200, signal = undefined, get = axios.get,
+  resolveUserName = getSlackUserName, resolveName = resolveChannelName,
+} = {}) {
+  const channelId = String(channel || '').trim();
+  if (!/^[CG][A-Z0-9]+$/.test(channelId)) {
+    const error = new Error('task Slack source must be a channel ID');
+    error.statusCode = 400;
+    throw error;
+  }
+  const oldest = slackHistoryBoundary(since, 'since');
+  if (!oldest) {
+    const error = new Error('since is required for a task-scoped Slack history read');
+    error.statusCode = 400;
+    throw error;
+  }
+  const latest = slackHistoryBoundary(until, 'until');
+  const maximum = Math.max(1, Math.min(500, Number(limit) || 200));
+  const rawMessages = [];
+  let cursor = '';
+  do {
+    const params = new URLSearchParams({
+      channel: channelId,
+      limit: String(Math.min(200, maximum - rawMessages.length)),
+      inclusive: 'true',
+    });
+    if (oldest) params.set('oldest', oldest);
+    if (latest) params.set('latest', latest);
+    if (cursor) params.set('cursor', cursor);
+    const response = await get(`https://slack.com/api/conversations.history?${params.toString()}`, {
+      headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
+      timeout: 6000,
+      signal,
+    });
+    if (!response.data?.ok) {
+      const error = new Error(`Slack history read failed: ${response.data?.error || 'unknown error'}`);
+      error.statusCode = 502;
+      throw error;
+    }
+    rawMessages.push(...(Array.isArray(response.data.messages) ? response.data.messages : []));
+    cursor = response.data.response_metadata?.next_cursor || '';
+  } while (cursor && rawMessages.length < maximum);
+
+  const messages = rawMessages.slice(0, maximum).sort((a, b) => Number(a.ts) - Number(b.ts));
+  const userIds = [...new Set(messages.map(message => message.user).filter(Boolean))];
+  const names = new Map(await Promise.all(userIds.map(async userId =>
+    [userId, await resolveUserName(userId)])));
+  const cleaned = await Promise.all(messages.map(async message => {
+    const text = await cleanSlackText(slackMessageAllText(message),
+      async userId => names.get(userId) || null);
+    const timestamp = Number(message.ts);
+    return {
+      ts: message.ts || null,
+      datetime: Number.isFinite(timestamp) ? new Date(timestamp * 1000).toISOString() : null,
+      user_id: message.user || null,
+      user_name: message.user ? names.get(message.user) || null : message.username || null,
+      bot_id: message.bot_id || null,
+      text,
+      thread_ts: message.thread_ts || null,
+    };
+  }));
+  return {
+    channel_id: channelId,
+    channel_name: await resolveName(channelId),
+    since: oldest,
+    until: latest,
+    count: cleaned.length,
+    messages: cleaned,
+  };
+}
+
 async function postSlackMessage(target, text, threadTs, options = {}) {
   return (await postSlackMessageReceipt(target, text, threadTs, options)).ok;
 }
@@ -290,6 +375,7 @@ module.exports = {
   cleanSlackText,
   fetchSlackThread,
   fetchSlackChannelHistory,
+  readSlackChannelWindow,
   buildSlackThreadHistory,
   resolveSlackChannelByName,
   resolveSlackUserByName,

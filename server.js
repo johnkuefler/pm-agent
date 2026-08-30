@@ -81,7 +81,7 @@ const { getSlackUserIdentity, getSlackUserName, cleanSlackText, fetchSlackThread
   buildSlackThreadHistory, resolveSlackChannelByName, resolveSlackUserByName,
   postSlackMessageReceipt, postSlackMessage, trySlackReaction, resetSlackReactionCapabilityForTest, resolveChannelName,
   resolveChannelNames, SLACK_TABLE_FORMATTING_INSTRUCTION, normalizeSlackMrkdwn,
-  formatSlackMessagePayload } = require('./src/surfaces/slack/web-api');
+  formatSlackMessagePayload, readSlackChannelWindow } = require('./src/surfaces/slack/web-api');
 const interactivePerformance = require('./src/runtime/interactive-performance');
 const driveArtifactUpload = require('./src/integrations/drive-artifact-upload');
 const { createRuntimeActivityStream } = require('./src/runtime/activity-stream');
@@ -96,6 +96,7 @@ const { createWriteThroughQueue } = require('./src/runtime/write-through-queue')
 const { createRecurringJobRegistry, quarantineMessage } = require('./src/runtime/recurring-jobs');
 const { createAdaptiveWorkerLoop } = require('./src/runtime/adaptive-worker-loop');
 const { boundedNativeTask, buildNativeTaskPacket } = require('./src/runtime/native-task-packet');
+const { createTaskSlackSourceTool } = require('./src/runtime/task-slack-source-tool');
 const { captureMarkerPersistence, diffMarkerPersistence } = require('./src/runtime/marker-delta');
 const { captureTaskPersistence, diffTaskPersistence } = require('./src/runtime/task-delta');
 const { captureSlackThreadPersistence, diffSlackThreadPersistence } =
@@ -4630,7 +4631,7 @@ registerProjectRoutes(app, { requireAuth, loadProjects, saveProjects });
 
 registerTaskRoutes(app, {
   requireAuth, loadTasks, saveTasks, addTask, isTaskEligibleNow, isValidRecurrence, computeNextRun,
-  deliverSlack: postSlackMessageReceipt,
+  deliverSlack: postSlackMessageReceipt, readSlackSource: readSlackChannelWindow,
 });
 
 let _hourlyFallbackInFlight = false;
@@ -4792,6 +4793,8 @@ function nativeHourlyTaskToolset(task, successfulActions) {
       write: CALENDAR_WRITE_TOOL_NAMES.includes(tool.definition.name),
     });
   }
+  const slackSource = createTaskSlackSourceTool(task, readSlackChannelWindow);
+  if (slackSource) add(slackSource.definition, slackSource.execute);
   const fixedDeliveryChannel = String(task.metadata?.destination_channel || '').trim();
   if (fixedDeliveryChannel) {
     add({
