@@ -67,6 +67,7 @@ const { parseRecallTranscriptEvent, parseRecallStatusEvent,
   appendUniqueUtterance, mergeKeyedTranscriptHistories } = require('./src/surfaces/meeting/recall-events');
 const { createRecallTranscriptRecoveryRuntime } = require('./src/surfaces/meeting/recall-recovery');
 const { createRecallWebhookVerificationMiddleware } = require('./src/surfaces/meeting/recall-verification');
+const { createGptLiveMeetingRelay } = require('./src/surfaces/meeting/gpt-live-relay');
 // Slack surface. Extracted from this file; see CLAUDE.md for why new Slack code belongs in
 // src/surfaces/slack/ rather than here.
 const { boundedTerminalAt: boundedSlackTerminalAt } = require('./src/surfaces/slack/budget');
@@ -690,8 +691,11 @@ async function initPersistence() {
     slackJoinedThreads = await db.loadAllSlackThreads();
     _persistedSlackThreadState = captureSlackThreadPersistence(slackJoinedThreads);
     slackFinancialApproved = (await db.getState('slack_financial_approved')) || {};
+    const storedSessionTokens = (await db.getState('session_tokens')) || {};
+    for (const token of Object.keys(sessionTokens)) delete sessionTokens[token];
+    Object.assign(sessionTokens, storedSessionTokens);
     _dbReady = true;
-    console.log(`🗄️  Postgres ready — tasks:${_cache.tasks.length} projects:${_cache.projects.length} markers:${Object.keys(_cache.markers).length} mcp:${_cache.mcp.length} threads:${Object.keys(slackJoinedThreads).length}`);
+    console.log(`🗄️  Postgres ready — tasks:${_cache.tasks.length} projects:${_cache.projects.length} markers:${Object.keys(_cache.markers).length} mcp:${_cache.mcp.length} threads:${Object.keys(slackJoinedThreads).length} meeting_tokens:${Object.keys(sessionTokens).length}`);
   } catch (e) {
     console.error('❌ Postgres init failed. Error:', e.message);
     _dbReady = false;
@@ -1039,20 +1043,69 @@ app.post('/routine/rollback', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Recall needs a webpage camera source to display Nora in the participant tile. This page is
-// deliberately static and silent. The legacy path keeps already-scheduled bots from opening a 404.
+// Recall runs this page as Nora's camera feed. With a valid meeting token it also relays meeting
+// audio to GPT-Live and plays Nora's returned speech into the call; without one it stays a static
+// avatar so previously scheduled transcription-only bots continue to work.
 app.get('/voice-agent', (_req, res) => {
   res.sendFile(path.join(__dirname, 'meeting-avatar.html'));
 });
 
-// Recall bot configuration is transcription-only. The webpage camera is a static identity card;
-// Nora does not publish audio, speak, chat, or inspect screen shares.
-function buildBotConfig(serverHost, botName = 'Nora') {
+const SESSION_TOKENS_PATH = path.join(LOCAL_DATA_DIR, 'nora-meeting-voice-tokens.json');
+function loadSessionTokens() {
+  try { return JSON.parse(fs.readFileSync(SESSION_TOKENS_PATH, 'utf8')); }
+  catch { return {}; }
+}
+const sessionTokens = loadSessionTokens();
+
+async function persistSessionTokens() {
+  const snapshot = JSON.parse(JSON.stringify(sessionTokens));
+  if (_dbReady) {
+    await db.setState('session_tokens', snapshot);
+    return;
+  }
+  fs.writeFileSync(SESSION_TOKENS_PATH, JSON.stringify(snapshot, null, 2));
+}
+
+function meetingVoiceEnabled() {
+  return process.env.MEETING_VOICE_ENABLED !== '0';
+}
+
+function issueMeetingVoiceToken() {
+  return meetingVoiceEnabled() ? crypto.randomBytes(32).toString('hex') : null;
+}
+
+function resolveMeetingVoiceBotId(token) {
+  const record = sessionTokens[token];
+  return typeof record === 'string' ? record : record?.bot_id || null;
+}
+
+function registerMeetingVoiceToken(token, botId) {
+  if (!token || !botId) return;
+  sessionTokens[token] = { bot_id: botId, created_at: new Date().toISOString() };
+}
+
+function revokeMeetingVoiceTokens(botId) {
+  let removed = 0;
+  for (const [token, record] of Object.entries(sessionTokens)) {
+    const recordBotId = typeof record === 'string' ? record : record?.bot_id;
+    if (recordBotId !== botId) continue;
+    delete sessionTokens[token];
+    removed += 1;
+  }
+  return removed;
+}
+
+// Recall keeps the reliable, speaker-attributed transcript. Its webpage output supplies the
+// separate low-latency audio loop used only for a directly addressed spoken conversation.
+function buildBotConfig(serverHost, botName = 'Nora', sessionToken = null) {
   const SERVER_URL = `https://${serverHost}`;
+  const voiceAgentUrl = sessionToken
+    ? `${SERVER_URL}/voice-agent?token=${encodeURIComponent(sessionToken)}`
+    : `${SERVER_URL}/voice-agent`;
   return {
     bot_name: botName,
     output_media: {
-      camera: { kind: 'webpage', config: { url: `${SERVER_URL}/voice-agent` } }
+      camera: { kind: 'webpage', config: { url: voiceAgentUrl } }
     },
     recording_config: {
       transcript: {
@@ -1060,7 +1113,8 @@ function buildBotConfig(serverHost, botName = 'Nora') {
       },
       realtime_endpoints: [
         { type: 'webhook', url: `${SERVER_URL}/webhook/transcript`, events: ['transcript.data'] }
-      ]
+      ],
+      ...(sessionToken ? { include_bot_in_recording: { audio: true } } : {})
     },
     variant: { zoom: 'web_4_core', google_meet: 'web_4_core', microsoft_teams: 'web_4_core' },
     webhook_url: `${SERVER_URL}/webhook/status`
@@ -1070,6 +1124,14 @@ function buildBotConfig(serverHost, botName = 'Nora') {
 function newSession() {
   return { buffer: [], transcript: [], lastRecallLineAt: 0 };
 }
+const meetingVoiceRelay = createGptLiveMeetingRelay({
+  server,
+  apiKey: process.env.OPENAI_API_KEY,
+  resolveBotId: resolveMeetingVoiceBotId,
+  getSession: botId => sessions[botId] || null,
+  model: 'gpt-live-1',
+  voice: process.env.NORA_MEETING_VOICE || 'gleam',
+});
 // The server's own public host for Recall callbacks and the static avatar page when there is no
 // inbound request to read it from, such as a join triggered from Slack.
 function publicHost(fallback) {
@@ -1086,18 +1148,24 @@ function extractMeetingUrl(text) {
   return m ? m[0].replace(/[.,);]+$/, '') : null;
 }
 
-// Core join logic, shared by the dashboard and Slack. The bot only captures transcripts.
+// Core join logic, shared by the dashboard and Slack. Recall records the transcript while the
+// webpage audio bridge lets GPT-Live answer participants who explicitly address Nora.
 async function startMeetingJoin({ meeting_url, source = 'manual_join', host }) {
   if (!meeting_url) throw new Error('meeting_url is required');
-  const botConfig = buildBotConfig(host || publicHost());
+  const sessionToken = issueMeetingVoiceToken();
+  const botConfig = buildBotConfig(host || publicHost(), 'Nora', sessionToken);
   const botRes = await axios.post(`${RECALL_BASE}/bot/`, { meeting_url, ...botConfig }, {
     headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` },
     timeout: RECALL_JOIN_TIMEOUT_MS,
   });
   const botId = botRes.data.id;
   if (!sessions[botId]) sessions[botId] = newSession();
-  console.log(`✅ Nora transcription bot joined. Bot ID: ${botId} (source: ${source})`);
-  return { bot_id: botId };
+  if (sessionToken) {
+    registerMeetingVoiceToken(sessionToken, botId);
+    await persistSessionTokens();
+  }
+  console.log(`✅ Nora meeting bot joined. Bot ID: ${botId} (source: ${source}, voice: ${sessionToken ? 'gpt-live-1' : 'off'})`);
+  return { bot_id: botId, voice_enabled: Boolean(sessionToken) };
 }
 
 app.post('/join', requireAuth, async (req, res) => {
@@ -1430,7 +1498,8 @@ app.post('/webhook/recall-calendar', verifyRecallDashboard, async (req, res) => 
         continue;
       }
 
-      const botConfig = buildBotConfig(SERVER_HOST);
+      const sessionToken = issueMeetingVoiceToken();
+      const botConfig = buildBotConfig(SERVER_HOST, 'Nora', sessionToken);
 
       try {
         const scheduleRes = await axios.post(
@@ -1452,7 +1521,11 @@ app.post('/webhook/recall-calendar', verifyRecallDashboard, async (req, res) => 
         const botId = latest?.bot_id || latest?.id || latest?.bot?.id
                    || rd.bot_id || rd.id || rd.bot?.id || null;
         if (botId && !sessions[botId]) sessions[botId] = newSession();
-        console.log(`📅 Auto-scheduled Nora to transcribe event "${ev.raw?.summary || ev.summary}"${botId ? ` → bot ${botId}` : ''}`);      } catch (botErr) {
+        if (botId && sessionToken) {
+          registerMeetingVoiceToken(sessionToken, botId);
+          await persistSessionTokens();
+        }
+        console.log(`📅 Auto-scheduled Nora for event "${ev.raw?.summary || ev.summary}"${botId ? ` → bot ${botId}` : ''}${sessionToken ? ' with GPT-Live voice' : ''}`);      } catch (botErr) {
         // Don't crash the whole sync if one event fails — log and continue.
         console.error(`📅 Failed to schedule bot for event ${ev.id}:`, botErr.response?.data || botErr.message);
       }
@@ -1511,6 +1584,11 @@ app.post('/webhook/status', verifyRecallDashboard, async (req, res) => {
   const bot_id = status?.bot_id || null;
   if (status?.code === 'done') {
     console.log(`Meeting ended. Cleaning up session ${bot_id}`);
+    if (revokeMeetingVoiceTokens(bot_id)) {
+      persistSessionTokens().catch(error => {
+        console.error(`Meeting voice token cleanup failed for ${bot_id}:`, error.message);
+      });
+    }
     // Persist the final transcript before cleaning up.
     const session = sessions[bot_id];
     let retainSessionForTranscriptRetry = false;
@@ -6404,6 +6482,7 @@ async function start(options = {}) {
 
 async function stop() {
   setServiceReadiness('draining');
+  meetingVoiceRelay.close();
   // Optional inference is safe to preempt, but it must reach its finally/release boundary before
   // the final persistence flush and database close. Otherwise a provider response can arrive
   // during shutdown and mutate state after the last durable snapshot.

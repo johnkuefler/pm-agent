@@ -29,16 +29,145 @@
       line-height: 1;
       letter-spacing: -0.06em;
       text-indent: -0.06em;
+      transition: box-shadow 180ms ease, transform 180ms ease;
     }
+    .avatar.listening { box-shadow: 0 22px 70px rgba(0, 0, 0, 0.38), 0 0 0 12px rgba(110, 231, 183, 0.14); }
+    .avatar.speaking { box-shadow: 0 22px 70px rgba(0, 0, 0, 0.38), 0 0 0 18px rgba(139, 92, 246, 0.24); transform: scale(1.025); }
     .name { font-size: clamp(30px, 5vw, 52px); font-weight: 700; letter-spacing: -0.03em; }
     .status { font-size: clamp(16px, 2.5vw, 24px); color: #c9c4d8; }
   </style>
 </head>
 <body>
-  <main class="identity" aria-label="Nora, silent meeting transcription bot">
-    <div class="avatar" aria-hidden="true">N</div>
+  <main class="identity" aria-label="Nora, meeting assistant">
+    <div id="avatar" class="avatar" aria-hidden="true">N</div>
     <div class="name">Nora</div>
-    <div class="status">Transcribing this meeting</div>
+    <div id="status" class="status">Joining the conversation</div>
   </main>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const sessionToken = params.get('token');
+    const statusEl = document.getElementById('status');
+    const avatarEl = document.getElementById('avatar');
+    const targetRate = 24000;
+    let relay;
+    let captureContext;
+    let playbackContext;
+    let playbackEnd = 0;
+    let reconnectAttempt = 0;
+
+    function setStatus(text, state = '') {
+      statusEl.textContent = text;
+      avatarEl.className = `avatar ${state}`.trim();
+    }
+
+    function base64Pcm16(samples) {
+      const pcm = new Int16Array(samples.length);
+      for (let i = 0; i < samples.length; i++) {
+        const value = Math.max(-1, Math.min(1, samples[i]));
+        pcm[i] = value < 0 ? value * 32768 : value * 32767;
+      }
+      const bytes = new Uint8Array(pcm.buffer);
+      let binary = '';
+      for (let i = 0; i < bytes.length; i += 0x8000) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      }
+      return btoa(binary);
+    }
+
+    function resample(input, fromRate) {
+      if (fromRate === targetRate) return input;
+      const outputLength = Math.max(1, Math.round(input.length * targetRate / fromRate));
+      const output = new Float32Array(outputLength);
+      const ratio = fromRate / targetRate;
+      for (let i = 0; i < outputLength; i++) {
+        const position = i * ratio;
+        const left = Math.floor(position);
+        const right = Math.min(input.length - 1, left + 1);
+        const mix = position - left;
+        output[i] = input[left] * (1 - mix) + input[right] * mix;
+      }
+      return output;
+    }
+
+    async function startCapture() {
+      if (captureContext) return;
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      captureContext = new AudioContext();
+      await captureContext.resume();
+      const source = captureContext.createMediaStreamSource(stream);
+      const processor = captureContext.createScriptProcessor(4096, 1, 1);
+      processor.onaudioprocess = event => {
+        if (!relay || relay.readyState !== WebSocket.OPEN) return;
+        const samples = resample(event.inputBuffer.getChannelData(0), captureContext.sampleRate);
+        relay.send(JSON.stringify({ type: 'session.input_audio.append', audio: base64Pcm16(samples) }));
+      };
+      source.connect(processor);
+      processor.connect(captureContext.destination);
+      setStatus('Listening — say “Nora” to talk', 'listening');
+    }
+
+    function playAudio(base64) {
+      if (!base64) return;
+      if (!playbackContext || playbackContext.state === 'closed') {
+        playbackContext = new AudioContext({ sampleRate: targetRate });
+        playbackEnd = 0;
+      }
+      const raw = atob(base64);
+      const bytes = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+      const pcm = new Int16Array(bytes.buffer, bytes.byteOffset, Math.floor(bytes.byteLength / 2));
+      const buffer = playbackContext.createBuffer(1, pcm.length, targetRate);
+      const channel = buffer.getChannelData(0);
+      for (let i = 0; i < pcm.length; i++) channel[i] = pcm[i] / 32768;
+      const source = playbackContext.createBufferSource();
+      source.buffer = buffer;
+      source.connect(playbackContext.destination);
+      const startAt = Math.max(playbackContext.currentTime, playbackEnd);
+      source.start(startAt);
+      playbackEnd = startAt + buffer.duration;
+      setStatus('Speaking', 'speaking');
+      source.onended = () => {
+        if (playbackContext && playbackContext.currentTime >= playbackEnd - 0.04) {
+          setStatus('Listening — say “Nora” to talk', 'listening');
+        }
+      };
+    }
+
+    function connect() {
+      if (!sessionToken) {
+        setStatus('Transcribing this meeting');
+        return;
+      }
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      relay = new WebSocket(`${protocol}//${location.host}/ws/gpt-live?token=${encodeURIComponent(sessionToken)}`);
+      setStatus('Connecting voice…');
+      relay.onopen = async () => {
+        reconnectAttempt = 0;
+        try { await startCapture(); }
+        catch (error) {
+          console.error('Meeting audio capture failed', error);
+          setStatus('Transcribing — voice unavailable');
+        }
+      };
+      relay.onmessage = event => {
+        let message;
+        try { message = JSON.parse(event.data); } catch { return; }
+        if (message.type === 'session.started') setStatus('Listening — say “Nora” to talk', 'listening');
+        if (message.type === 'session.output_audio.delta') playAudio(message.delta);
+        if (message.type === 'error') {
+          console.error('GPT-Live error', message.error);
+          setStatus('Transcribing — voice unavailable');
+        }
+      };
+      relay.onclose = () => {
+        setStatus('Reconnecting voice…');
+        const delay = Math.min(15000, 1000 * (2 ** reconnectAttempt++));
+        setTimeout(connect, delay);
+      };
+      relay.onerror = error => console.error('Meeting voice relay error', error);
+    }
+
+    connect();
+  </script>
 </body>
 </html>

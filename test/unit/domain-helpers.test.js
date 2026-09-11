@@ -43,7 +43,7 @@ test('relative day labels use Central calendar days', () => {
   assert.equal(helpers.relativeDayLabel(new Date('2026-07-12T16:00:00.000Z'), now), 'tomorrow');
 });
 
-test('Recall bot config is transcription-only', () => {
+test('Recall bot config keeps legacy joins transcription-only without a voice token', () => {
   const config = helpers.buildBotConfig('nora.example.com', 'Nora Test');
   assert.equal(config.bot_name, 'Nora Test');
   assert.deepEqual(config.output_media, {
@@ -59,11 +59,24 @@ test('Recall bot config is transcription-only', () => {
   assert.equal(config.webhook_url, 'https://nora.example.com/webhook/status');
 });
 
-test('meeting avatar is static and cannot speak or run client code', () => {
+test('Recall bot config enables the secured GPT-Live webpage for new joins', () => {
+  const config = helpers.buildBotConfig('nora.example.com', 'Nora Test', 'secret-token');
+  assert.deepEqual(config.output_media, {
+    camera: { kind: 'webpage', config: {
+      url: 'https://nora.example.com/voice-agent?token=secret-token',
+    } },
+  });
+  assert.deepEqual(config.recording_config.include_bot_in_recording, { audio: true });
+  assert.equal(config.recording_config.video_separate_png, undefined);
+});
+
+test('meeting avatar carries only the narrow GPT-Live audio bridge', () => {
   const avatar = fs.readFileSync(path.join(__dirname, '../../meeting-avatar.html'), 'utf8');
-  assert.match(avatar, /Transcribing this meeting/);
-  assert.match(avatar, /class="avatar"[^>]*>N</);
-  assert.doesNotMatch(avatar, /<script|<audio|<video|WebSocket|fetch\(/i);
+  assert.match(avatar, /say “Nora” to talk/);
+  assert.match(avatar, /id="avatar"[^>]*>N</);
+  assert.match(avatar, /session\.input_audio\.append/);
+  assert.match(avatar, /session\.output_audio\.delta/);
+  assert.doesNotMatch(avatar, /screen.?share|participant_events|webhook\/chat/i);
 });
 
 test('the request-driven prompt preserves Nora concise PM voice', () => {

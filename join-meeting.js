@@ -2,41 +2,18 @@ require('dotenv').config();
 const axios = require('axios');
 axios.defaults.timeout = 12000;
 
-const RECALL_BASE = `https://${process.env.RECALL_REGION}.recall.ai/api/v1`;
-const SERVER_URL = 'https://pm-agent-production-c49e.up.railway.app';
+const SERVER_URL = (process.env.NORA_SERVER_URL || 'https://pm-agent-production-c49e.up.railway.app').replace(/\/$/, '');
 
 async function sendNoraToMeeting(zoomUrl) {
-  const res = await axios.post(`${RECALL_BASE}/bot/`, {
-    meeting_url: zoomUrl,
-    bot_name: "Nora",
-    output_media: {
-      camera: { kind: 'webpage', config: { url: `${SERVER_URL}/voice-agent` } }
-    },
-    recording_config: {
-      transcript: {
-        provider: { assembly_ai_v3_streaming: { speech_model: 'universal-streaming-english' } }
-      },
-      realtime_endpoints: [
-        {
-          type: 'webhook',
-          url: `${SERVER_URL}/webhook/transcript`,
-          events: ['transcript.data']
-        }
-      ]
-    },
-    variant: {
-      zoom: "web_4_core",
-      google_meet: "web_4_core",
-      microsoft_teams: "web_4_core"
-    },
-    webhook_url: `${SERVER_URL}/webhook/status`
-  }, {
-    headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` },
+  const res = await axios.post(`${SERVER_URL}/join`, { meeting_url: zoomUrl }, {
+    headers: process.env.NORA_API_KEY
+      ? { Authorization: `Bearer ${process.env.NORA_API_KEY}` }
+      : {},
     timeout: 12000,
   });
 
-  const botId = res.data.id;
-  console.log('✅ Nora joined. Bot ID:', botId);
+  const botId = res.data.bot_id;
+  console.log(`✅ Nora joined. Bot ID: ${botId}. GPT-Live voice: ${res.data.voice_enabled ? 'on' : 'off'}`);
 
   return botId;
 }
