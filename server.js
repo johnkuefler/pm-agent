@@ -692,8 +692,12 @@ async function initPersistence() {
     _persistedSlackThreadState = captureSlackThreadPersistence(slackJoinedThreads);
     slackFinancialApproved = (await db.getState('slack_financial_approved')) || {};
     const storedSessionTokens = (await db.getState('session_tokens')) || {};
+    const activeSessionTokens = normalizeMeetingVoiceTokens(storedSessionTokens);
     for (const token of Object.keys(sessionTokens)) delete sessionTokens[token];
-    Object.assign(sessionTokens, storedSessionTokens);
+    Object.assign(sessionTokens, activeSessionTokens);
+    if (Object.keys(activeSessionTokens).length !== Object.keys(storedSessionTokens).length) {
+      await db.setState('session_tokens', activeSessionTokens);
+    }
     _dbReady = true;
     console.log(`🗄️  Postgres ready — tasks:${_cache.tasks.length} projects:${_cache.projects.length} markers:${Object.keys(_cache.markers).length} mcp:${_cache.mcp.length} threads:${Object.keys(slackJoinedThreads).length} meeting_tokens:${Object.keys(sessionTokens).length}`);
   } catch (e) {
@@ -1051,8 +1055,21 @@ app.get('/voice-agent', (_req, res) => {
 });
 
 const SESSION_TOKENS_PATH = path.join(LOCAL_DATA_DIR, 'nora-meeting-voice-tokens.json');
+const MEETING_VOICE_TOKEN_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
+function normalizeMeetingVoiceTokens(records, now = Date.now()) {
+  const active = {};
+  for (const [token, record] of Object.entries(records || {})) {
+    if (!/^[a-f0-9]{64}$/.test(token) || !record || typeof record !== 'object') continue;
+    const createdAt = Date.parse(record.created_at);
+    if (!record.bot_id || !Number.isFinite(createdAt)) continue;
+    if (createdAt > now + 60 * 60 * 1000 || now - createdAt > MEETING_VOICE_TOKEN_MAX_AGE_MS) continue;
+    active[token] = { bot_id: String(record.bot_id), created_at: new Date(createdAt).toISOString() };
+  }
+  return active;
+}
+
 function loadSessionTokens() {
-  try { return JSON.parse(fs.readFileSync(SESSION_TOKENS_PATH, 'utf8')); }
+  try { return normalizeMeetingVoiceTokens(JSON.parse(fs.readFileSync(SESSION_TOKENS_PATH, 'utf8'))); }
   catch { return {}; }
 }
 const sessionTokens = loadSessionTokens();
@@ -6616,6 +6633,7 @@ module.exports = {
     processResources,
     relativeDayLabel,
     buildBotConfig,
+    normalizeMeetingVoiceTokens,
     buildSystemPrompt,
     verifySlackRequest,
     verifySlackSignature,

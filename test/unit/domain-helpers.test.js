@@ -70,6 +70,20 @@ test('Recall bot config enables the secured GPT-Live webpage for new joins', () 
   assert.equal(config.recording_config.video_separate_png, undefined);
 });
 
+test('meeting voice credentials discard the obsolete voice system and expire bounded sessions', () => {
+  const now = Date.parse('2026-09-11T12:00:00.000Z');
+  const currentToken = 'a'.repeat(64);
+  const expiredToken = 'b'.repeat(64);
+  assert.deepEqual(helpers.normalizeMeetingVoiceTokens({
+    ['c'.repeat(64)]: 'legacy-bot-id',
+    [currentToken]: { bot_id: 'current-bot', created_at: '2026-09-10T12:00:00.000Z' },
+    [expiredToken]: { bot_id: 'expired-bot', created_at: '2026-01-01T12:00:00.000Z' },
+    malformed: { bot_id: 'bad-token', created_at: '2026-09-10T12:00:00.000Z' },
+  }, now), {
+    [currentToken]: { bot_id: 'current-bot', created_at: '2026-09-10T12:00:00.000Z' },
+  });
+});
+
 test('meeting avatar carries only the narrow GPT-Live audio bridge', () => {
   const avatar = fs.readFileSync(path.join(__dirname, '../../meeting-avatar.html'), 'utf8');
   assert.match(avatar, /say “Nora” to talk/);
