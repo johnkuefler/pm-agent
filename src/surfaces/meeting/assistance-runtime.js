@@ -45,6 +45,8 @@ function createMeetingAssistance(deps) {
       const hash = digest(doc.transcript);
       if (r.notes?.transcript_hash === hash) return null;
       r.ended = doc.ended;
+      if (r.prep?.status === 'pending') r.prep = { status: 'skipped',
+        error: 'This meeting ended before a brief was prepared.' };
       r.meta ||= { title: 'Meeting', attendees: [] };
       r.notes = { status: 'pending', transcript_hash: hash, cursor: 0, segments: [], attempts: 0 };
       return r;
@@ -210,7 +212,9 @@ function createMeetingAssistance(deps) {
     if (!record || record.deleted) return doc;
     const notes = record.notes && record.notes.transcript_hash === digest(doc.transcript)
       ? record.notes : { status: doc.ended ? 'pending' : 'waiting_for_meeting_end' };
-    return { ...doc, meeting: record.meta, preparation: record.prep,
+    const preparation = doc.ended && record.prep?.status === 'pending'
+      ? { status: 'skipped', error: 'This meeting ended before a brief was prepared.' } : record.prep;
+    return { ...doc, meeting: record.meta, preparation,
       notes: { status: notes.status, result: notes.result, prepared_at: notes.prepared_at,
         completed_segments: notes.cursor, total_segments: notes.total_segments, error: notes.error } };
   }

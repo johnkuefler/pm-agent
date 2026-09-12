@@ -142,6 +142,7 @@ test('notes require ended durable transcripts, are idempotent, and refresh after
   await f.runtime.tick();
   let data = await f.runtime.decorate(doc);
   assert.equal(data.notes.status, 'ready');
+  assert.equal(data.preparation.status, 'skipped');
   assert.equal(data.notes.result.todos[0].owner, 'Santi');
   await f.runtime.finished('bot-1');
   assert.equal(f.runtime.peek('bot-1').notes.status, 'ready');
