@@ -68,6 +68,8 @@ const { parseRecallTranscriptEvent, parseRecallStatusEvent,
 const { createRecallTranscriptRecoveryRuntime } = require('./src/surfaces/meeting/recall-recovery');
 const { createRecallWebhookVerificationMiddleware } = require('./src/surfaces/meeting/recall-verification');
 const { createGptLiveMeetingRelay } = require('./src/surfaces/meeting/gpt-live-relay');
+const { createMeetingAssistance } = require('./src/surfaces/meeting/assistance-runtime');
+const { registerMeetingChatControls, parseNoraMuteCommand } = require('./src/surfaces/meeting/chat-controls');
 // Slack surface. Extracted from this file; see CLAUDE.md for why new Slack code belongs in
 // src/surfaces/slack/ rather than here.
 const { boundedTerminalAt: boundedSlackTerminalAt } = require('./src/surfaces/slack/budget');
@@ -196,6 +198,7 @@ app.get('/runtime/performance', requireAuth, (req, res) => {
     persistence: operationStore.persistenceDiagnostics(),
     interactive_priority: interactivePerformance.prioritySnapshot(),
     background_work: backgroundWorkSnapshot(),
+    meeting_assistance: meetingAssistance.snapshot(),
     deferred_jobs: {
       ..._deferredJobHealth.snapshot({ busy: _jobWorkerBusy, memoryJobs: _memJobs,
         pendingFinalizations: _pendingJobFinalizations.size }),
@@ -1151,8 +1154,18 @@ const meetingVoiceRelay = createGptLiveMeetingRelay({
   apiKey: process.env.OPENAI_API_KEY,
   resolveBotId: resolveMeetingVoiceBotId,
   getSession: botId => sessions[botId] || (sessions[botId] = newSession()),
+  getContext: botId => meetingAssistance.voiceContext(botId),
   model: 'gpt-live-1',
   voice: process.env.NORA_MEETING_VOICE || 'gleam',
+});
+
+const meetingAssistance = createMeetingAssistance({
+  get: axios.get, post: axios.post, db, databaseReady: () => _dbReady,
+  directory: LOCAL_DATA_DIR, writeThrough: _writeThrough, calendarState: loadCalendarState,
+  recallBase: () => RECALL_V2_BASE, getTranscript: getTranscriptDoc,
+  teamworkTools: () => teamworkEnabled() ? TEAMWORK_TOOLS : [], financialContent: containsFinancialContent,
+  beginBackground: label => interactivePerformance.beginBackground(label),
+  publishContext: (botId, text) => meetingVoiceRelay.publishContext(botId, text),
 });
 // The server's own public host for Recall callbacks and the static avatar page when there is no
 // inbound request to read it from, such as a join triggered from Slack.
@@ -1172,7 +1185,7 @@ function extractMeetingUrl(text) {
 
 // Core join logic, shared by the dashboard and Slack. Recall records the transcript while the
 // webpage audio bridge lets GPT-Live answer participants who explicitly address Nora.
-async function startMeetingJoin({ meeting_url, source = 'manual_join', host }) {
+async function startMeetingJoin({ meeting_url, source = 'manual_join', host, context = '' }) {
   if (!meeting_url) throw new Error('meeting_url is required');
   const sessionToken = issueMeetingVoiceToken();
   const botConfig = buildBotConfig(host || publicHost(), 'Nora', sessionToken);
@@ -1181,6 +1194,7 @@ async function startMeetingJoin({ meeting_url, source = 'manual_join', host }) {
     timeout: RECALL_JOIN_TIMEOUT_MS,
   });
   const botId = botRes.data.id;
+  await meetingAssistance.joined(botId, { meeting_url, context }).catch(error => console.warn('Meeting preparation registration:', error.message));
   if (!sessions[botId]) sessions[botId] = newSession();
   if (sessionToken) {
     registerMeetingVoiceToken(sessionToken, botId);
@@ -1543,6 +1557,7 @@ app.post('/webhook/recall-calendar', verifyRecallDashboard, async (req, res) => 
         const botId = latest?.bot_id || latest?.id || latest?.bot?.id
                    || rd.bot_id || rd.id || rd.bot?.id || null;
         if (botId && !sessions[botId]) sessions[botId] = newSession();
+        if (botId) await meetingAssistance.calendar(ev, botId).catch(error => console.warn('Meeting preparation registration:', error.message));
         if (botId && sessionToken) {
           registerMeetingVoiceToken(sessionToken, botId);
           await persistSessionTokens();
@@ -1596,57 +1611,8 @@ app.post('/webhook/transcript', verifyRecallRealtime, async (req, res) => {
   }
 });
 
-// Meeting chat is not a conversational surface. It accepts only these two exact voice-control
-// commands so Nora can remain safely muted until a participant deliberately turns her on.
-function parseNoraMuteCommand(text) {
-  const normalized = String(text || '').trim().toLowerCase().replace(/[.!]+$/, '').trim();
-  const match = normalized.match(/^(?:@?nora[\s,:-]+(unmute|mute)|(unmute|mute)[\s,:-]+@?nora)$/);
-  return match ? (match[1] || match[2]) : null;
-}
-
-function setMeetingMuted(botId, muted) {
-  if (!botId) return null;
-  const session = sessions[botId] || (sessions[botId] = newSession());
-  session.muted = Boolean(muted);
-  if (session.voiceClientWs?.readyState === 1) {
-    try {
-      session.voiceClientWs.send(JSON.stringify({ type: 'nora.mute', muted: session.muted }));
-    } catch (error) {
-      // The browser may disconnect between the ready-state check and send. The session flag is
-      // authoritative and will be replayed if the avatar reconnects.
-      console.warn(`Meeting mute signal failed for ${botId}:`, error.message);
-    }
-  }
-  return session;
-}
-
-app.post('/webhook/chat-control', verifyRecallRealtime, async (req, res) => {
-  res.sendStatus(200);
-  const eventType = req.body?.event;
-  if (eventType !== 'participant_events.chat_message') return;
-  const eventData = req.body?.data?.data;
-  const text = eventData?.data?.text || req.body?.data?.chat_message?.text || '';
-  const command = parseNoraMuteCommand(text);
-  if (!command) return;
-  const botId = req.body?.data?.bot?.id;
-  if (!botId) return;
-
-  const muted = command === 'mute';
-  setMeetingMuted(botId, muted);
-  const speaker = eventData?.participant?.name || 'participant';
-  console.log(`Meeting voice ${muted ? 'muted' : 'unmuted'} by ${speaker} for bot ${botId}`);
-  const message = muted
-    ? 'Muted. Type “Nora unmute” when you want me to speak again.'
-    : 'Voice on. Say “Nora” when you want me.';
-  try {
-    await axios.post(`${RECALL_BASE}/bot/${botId}/send_chat_message/`, { message }, {
-      headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` },
-      timeout: RECALL_CONTROL_TIMEOUT_MS,
-    });
-  } catch (error) {
-    console.warn(`Meeting mute confirmation failed for ${botId}:`, error.message);
-  }
-});
+registerMeetingChatControls(app, { sessions, newSession, verifyRecallRealtime,
+  axios, RECALL_BASE, RECALL_CONTROL_TIMEOUT_MS });
 // Meeting status updates — track bot_id and clean up
 app.post('/webhook/status', verifyRecallDashboard, async (req, res) => {
   res.sendStatus(200);
@@ -1678,6 +1644,7 @@ app.post('/webhook/status', verifyRecallDashboard, async (req, res) => {
         await saveTranscriptDoc(bot_id, transcriptData.transcript, transcriptData.ended, {
           incremental: true,
         });
+        await meetingAssistance.finished(bot_id).catch(error => console.warn('Meeting notes registration:', error.message));
         console.log(`📝 Transcript saved for ${bot_id} (${session.transcript.length} utterances)`);
       } catch (err) {
         console.error('Transcript save error:', err.message);
@@ -3959,7 +3926,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, rootT
         const url = extractMeetingUrl(input && input.meeting_url);
         if (!url) return { error: 'That is not a recognizable Zoom/Meet/Teams meeting link, so I did not join. Send the actual join URL.' };
         try {
-          const r = await startMeetingJoin({ meeting_url: url, source: 'slack_join', host: publicHost() });
+          const r = await startMeetingJoin({ meeting_url: url, source: 'slack_join', host: publicHost(), context: text });
           return { joined: true, bot_id: r.bot_id, message: 'The transcription bot is joining now.' };
         } catch (e) {
           return { error: `Could not join: ${e.response?.data?.detail || (e.response?.data ? JSON.stringify(e.response.data) : e.message)}` };
@@ -6205,7 +6172,7 @@ const recallTranscriptRecovery = createRecallTranscriptRecoveryRuntime({
   checkpointAttempts: _transcriptCheckpointAttempts,
   persistedCounts: _transcriptPersistedCounts,
   refreshRecentMeetings: refreshRecentMeetingsCache,
-  enqueuePostProcessing: () => {},
+  enqueuePostProcessing: ({ botId }) => meetingAssistance.finished(botId).catch(error => console.warn('Meeting notes registration:', error.message)),
 });
 
 async function drainRecentMeetingsRefresh({ timeoutMs = 10000 } = {}) {
@@ -6270,7 +6237,8 @@ const MEETING_TOOLS = [
         if (!out.length) return { ended: doc.ended, total_lines: lines.length, note: 'no lines matched that search' };
       }
       const text = out.join('\n');
-      return { ended: doc.ended, total_lines: lines.length, transcript: text.length > 14000 ? text.slice(0, 14000) + '\n[truncated]' : text };
+      return { ended: doc.ended, total_lines: lines.length, notes: (await meetingAssistance.decorate(doc)).notes,
+        transcript: text.length > 14000 ? text.slice(0, 14000) + '\n[truncated]' : text };
     }
   }
 ];
@@ -6280,7 +6248,9 @@ const MEETING_TOOLS = [
 app.get('/transcripts', requireAuth, async (req, res) => {
   try {
     const list = filterTranscriptsByStatus(await listTranscriptDocs(), req.query.status);
-    res.json(sortTranscriptsNewestFirst(list));
+    res.json(sortTranscriptsNewestFirst(list).map(row => ({ ...row,
+      title: meetingAssistance.peek(row.bot_id)?.meta?.title || null,
+      notes_status: meetingAssistance.peek(row.bot_id)?.notes?.status || null })));
   } catch { res.json([]); }
 });
 
@@ -6288,7 +6258,7 @@ app.get('/transcripts/:botId', requireAuth, async (req, res) => {
   try {
     const data = await getTranscriptDoc(req.params.botId);
     if (!data) return res.status(404).json({ error: 'transcript not found' });
-    res.json(data);
+    res.json(await meetingAssistance.decorate(data));
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -6297,6 +6267,7 @@ app.delete('/transcripts/:botId', requireAuth, async (req, res) => {
     const data = await getTranscriptDoc(req.params.botId);
     if (!data) return res.status(404).json({ error: 'transcript not found' });
     await deleteTranscriptDoc(req.params.botId);
+    await meetingAssistance.remove(req.params.botId);
     console.log('🗑️ Transcript deleted:', req.params.botId);
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -6312,6 +6283,7 @@ app.put('/transcripts/:botId/utterances/:index', requireAuth, async (req, res) =
     if (speaker !== undefined) data.transcript[idx].speaker = speaker;
     if (text !== undefined) data.transcript[idx].text = text;
     await saveTranscriptDoc(req.params.botId, data.transcript, data.ended);
+    await meetingAssistance.finished(req.params.botId);
     reconcileTranscriptSessionAfterEdit(req.params.botId, data.transcript.length,
       session => applyUtteranceEditToSession(session, idx, { speaker, text }));
     console.log('✏️ Transcript utterance updated:', req.params.botId, 'index', idx);
@@ -6327,6 +6299,7 @@ app.delete('/transcripts/:botId/utterances/:index', requireAuth, async (req, res
     if (idx < 0 || idx >= data.transcript.length) return res.status(404).json({ error: 'utterance index out of range' });
     const removed = data.transcript.splice(idx, 1);
     await saveTranscriptDoc(req.params.botId, data.transcript, data.ended);
+    await meetingAssistance.finished(req.params.botId);
     reconcileTranscriptSessionAfterEdit(req.params.botId, data.transcript.length,
       session => applyUtteranceDeleteToSession(session, idx));
     console.log('🗑️ Transcript utterance deleted:', req.params.botId, 'index', idx, removed[0].text.slice(0, 50));
@@ -6489,11 +6462,14 @@ async function completePostListenStartup(background) {
   try { await mcpManager.migrate(); }
   catch (error) { console.error('MCP credential migration failed; MCP connections will remain unavailable:', error.message); }
   await teammateApprovals.hydrate();
+  await meetingAssistance.init();
   // A run lock can open a cycle immediately after the port becomes reachable. Finish the first
   // authoritative substrate observation soon after listening so that restart and persistence
   // scoring do not depend on a long startup race.
   processResources.start();
   if (background) {
+    scheduleRecurringRuntimeJob('meeting-assistance', 30000, args => meetingAssistance.tick(args),
+      { initialDelayMs: 15000, timeoutMs: 110000 });
     scheduleStartupBackgroundTask('startup transcript date backfill', 8000, () => backfillTranscriptDates());
     scheduleRecurringRuntimeJob('recent-meetings-refresh', 10 * 60 * 1000,
       refreshRecentMeetingsCache, { initialDelayMs: 12000, timeoutMs: 30000 });
@@ -6612,6 +6588,7 @@ async function stop() {
     console.warn('Acknowledged meeting work drain exceeded 20000ms; continuing bounded shutdown');
   }
   const transcriptDrain = await drainTranscriptCheckpoints().then(() => null, error => error);
+  await meetingAssistance.drain();
   const [persistenceDrain, recentMeetingsDrain] = await Promise.allSettled([
     operationStore.persistStrict(),
     drainRecentMeetingsRefresh({ timeoutMs: 10000 }),

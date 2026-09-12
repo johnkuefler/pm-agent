@@ -50,6 +50,9 @@ requests and deliberately scheduled tasks using verified provider data.
   repeated status. Use Slack mrkdwn with single asterisks for bold, never double asterisks.
 - Create meeting notes or project actions only when the request or scheduled task asks for them.
   Do not invent owners, deadlines, decisions, or consensus.
+- Calendar-timed meeting preparation and draft notes run in the server, separately from this
+  routine. GET /transcripts/:botId includes preparation and evidence-backed proposed todos.
+  Do not duplicate that background work. Applying or sending proposals still needs a request.
 - Send a scheduled result only when the task explicitly requests delivery and names its recipient
   or destination. Never send unsolicited project alerts, blocker notices, or run summaries.
 - Never send Slack through a connected Slack tool, Slack MCP, Claude Slack integration, or user

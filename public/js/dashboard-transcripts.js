@@ -13,9 +13,10 @@
         list.innerHTML = transcripts.map(t => `
           <div class="task-item" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center;">
             <div style="flex: 1;" onclick="viewTranscript('${escHtml(t.bot_id)}')">
-              <div class="task-action">${escHtml(t.bot_id)}</div>
+              <div class="task-action">${escHtml(t.title || t.bot_id)}</div>
               <div class="task-meta">
                 ${t.utterance_count} utterances · ${t.ended ? 'ended ' + new Date(t.ended).toLocaleString() : '<span style="color: var(--warn);">In progress</span>'}
+                ${t.notes_status ? ' · Notes: ' + escHtml(t.notes_status) : ''}
               </div>
             </div>
             <button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); deleteTranscript('${escHtml(t.bot_id)}')" style="margin-left: 12px; flex-shrink: 0;">Delete</button>
@@ -38,7 +39,9 @@
         const r = await api('/transcripts/' + botId);
         if (!r.ok) { content.innerHTML = '<p class="empty">Transcript not found.</p>'; return; }
         const data = await r.json();
+        document.getElementById('transcript-detail-title').textContent = data.meeting?.title || 'Transcript: ' + botId;
         renderUtterances(data.transcript);
+        content.insertAdjacentHTML('afterbegin', renderMeetingAssistance(data));
       } catch (e) { content.innerHTML = '<p class="empty">Failed to load transcript.</p>'; }
     }
 
@@ -106,4 +109,27 @@
           alert('Failed to delete: ' + (data.error || 'unknown error'));
         }
       } catch (e) { alert('Failed: ' + e.message); }
+    }
+
+    function renderMeetingAssistance(data) {
+      const prep = data.preparation;
+      const notes = data.notes;
+      const result = notes?.result;
+      let html = '';
+      if (prep) html += `<details style="margin-bottom:16px"><summary>Meeting preparation: ${escHtml(prep.status)}</summary>
+        <p style="white-space:pre-wrap">${escHtml(prep.brief || prep.error || 'Preparation is queued for shortly before the meeting.')}</p>
+        ${(prep.gaps || []).map(g => `<p>${escHtml(g)}</p>`).join('')}</details>`;
+      if (notes) html += `<section style="margin-bottom:24px"><h3>Meeting notes</h3>
+        <p>${notes.status === 'ready' ? 'Draft for review. Proposed tasks have not been created in Teamwork.'
+          : escHtml(notes.error || (notes.status === 'pending' ? (result
+            ? 'Partial draft. Later corrections are still being reconciled. Refresh this meeting to check progress.'
+            : 'Preparing notes. Refresh this meeting to check progress.') : 'Notes are prepared when the meeting ends.'))}</p>
+        ${result ? `<p style="white-space:pre-wrap">${escHtml(result.summary)}</p>` : ''}
+        ${[['decisions', 'Decisions'], ['todos', 'Proposed todos'], ['open_questions', 'Open questions'], ['risks', 'Risks and blockers']].map(([field, label]) =>
+          result?.[field]?.length ? `<h4>${label}</h4><ul>${result[field].map(item => `<li style="margin-bottom:12px">${escHtml(item.text)}
+            ${field === 'todos' ? `<div>Owner: ${escHtml(item.owner || 'Unconfirmed')} · Due: ${escHtml(item.due_text || 'Unconfirmed')}</div>` : ''}
+            <details><summary>Transcript evidence: ${escHtml(item.speaker)}</summary>
+              <a href="#utt-${Number(item.source_index)}">${escHtml(item.quote)}</a></details></li>`).join('')}</ul>` : '').join('')}
+        </section>`;
+      return html;
     }
