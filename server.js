@@ -6213,7 +6213,8 @@ const MEETING_TOOLS = [
           if (doc) speakers = [...new Set((doc.transcript || []).map(u => u.speaker).filter(s => s && !/^(Nora|Screen share|Participant)/i.test(s)))].slice(0, 8);
         } catch {}
         const filed = markers[`filed-transcript:${r.bot_id}`] || null;
-        rows.push({ bot_id: r.bot_id, ended: r.ended, utterances: r.utterance_count, speakers, filed_for: filed && filed.client ? filed.client : null });
+        rows.push({ bot_id: r.bot_id, title: meetingAssistance.peek(r.bot_id)?.meta?.title || null,
+          ended: r.ended, utterances: r.utterance_count, speakers, filed_for: filed && filed.client ? filed.client : null });
       }
       return { meetings: rows, note: rows.length ? undefined : `no transcripts in the last ${days} days` };
     }
