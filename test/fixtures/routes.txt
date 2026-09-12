@@ -19,6 +19,7 @@ GET /calendar/status
 DELETE /calendar
 POST /webhook/recall-calendar
 POST /webhook/transcript
+POST /webhook/chat-control
 POST /webhook/status
 GET /teammate-approvals
 POST /teammate-approvals/proposals

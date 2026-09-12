@@ -68,11 +68,31 @@ test('a lane retrying but not yet past its ceiling still blocks', () => {
 
 test('the wedged test needs both an active retry and an exhausted ceiling', () => {
   assert.equal(WEDGED_RETRY_ATTEMPTS, 6, 'the deploy gate must match the transcript retry ceiling');
-  assert.equal(transcriptCheckpointsWedged({ retrying: 1, maximum_retry_attempt: 8376 }), true);
+  assert.equal(transcriptCheckpointsWedged({ retrying: 1, maximum_retry_attempt: 8376,
+    pending: 1, scheduled: 1 }), true);
   assert.equal(transcriptCheckpointsWedged({ retrying: 0, maximum_retry_attempt: 8376 }), false,
     'a high-water mark with nothing retrying is history, not a stuck lane');
-  assert.equal(transcriptCheckpointsWedged({ retrying: 1, maximum_retry_attempt: 2 }), false);
+  assert.equal(transcriptCheckpointsWedged({ retrying: 1, maximum_retry_attempt: 2,
+    pending: 1, scheduled: 1 }), false);
   assert.equal(transcriptCheckpointsWedged({}), false);
+});
+
+test('a bounded divergence that already stopped is restart-safe', () => {
+  const stopped = {
+    reliability: { status: 'action_required', action_required: [
+      { code: 'entity_persistence_failure', message: 'durable lane retains its terminal error' },
+    ] },
+    background_work: { transcript_checkpoints: {
+      pending: 0, scheduled: 0, transcript_in_flight: 0,
+      retrying: 1, maximum_retry_attempt: 2,
+    } },
+    entity_writes: { pending: 0, in_flight: 0, current_errors: 1 },
+  };
+  const result = assessDeployReadiness({ runtimePerformance: stopped });
+  assert.equal(result.ready, true,
+    'there is no write left to interrupt and restart clears the terminal in-memory error');
+  assert.deepEqual(result.blockers, []);
+  assert.deepEqual(result.wedged.map(item => item.kind), ['runtime_reliability']);
 });
 
 // Everything else this gate protects is genuinely transient and must keep blocking. A wedged write

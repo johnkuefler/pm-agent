@@ -57,12 +57,12 @@ test('core task, Slack, meeting, transcript, and settings controls remain visibl
   const meeting = fs.readFileSync(path.join(root, 'public/js/dashboard-meeting.js'), 'utf8');
   const slack = fs.readFileSync(path.join(root, 'public/js/dashboard-slack-log.js'), 'utf8');
   assert.match(core, /Dashboard request timed out/);
-  assert.match(meeting, /Nora is joining silently to transcribe/);
+  assert.match(meeting, /Nora is joining muted to transcribe/);
   assert.match(slack, /\/slack\/conversations/);
   assert.match(slack, /They asked/);
   assert.match(slack, /Nora replied/);
   assert.doesNotMatch(slack, /channel_id|user_id/);
-  assert.doesNotMatch(meeting, /mute|one-on-one|mandate|project-hint/i);
+  assert.doesNotMatch(meeting, /one-on-one|mandate|project-hint/i);
   assert.doesNotMatch(meeting, /setInterval\(/);
 });
 

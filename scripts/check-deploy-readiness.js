@@ -59,9 +59,16 @@ const OUTGOING_BUILD_QUALITY_SIGNALS = new Set([
 function transcriptCheckpointsWedged(checkpoints = {}) {
   const attempts = Math.max(0, Number(checkpoints.maximum_retry_attempt) || 0);
   const retrying = Math.max(0, Number(checkpoints.retrying) || 0);
+  const pending = Math.max(0, Number(checkpoints.pending) || 0);
+  const scheduled = Math.max(0, Number(checkpoints.scheduled) || 0);
+  const inFlight = Math.max(0, Number(checkpoints.transcript_in_flight) || 0);
   // The bounded retry gives up after six attempts (two for an unresolvable divergence), so anything
   // past this is a lane that is not going to recover on its own no matter how long the gate waits.
-  return retrying > 0 && attempts >= WEDGED_RETRY_ATTEMPTS;
+  // A stopped lane is also explicit in the snapshot: it retains its attempt/error record, but has
+  // no pending, scheduled, or in-flight checkpoint. That covers the two-attempt divergence ceiling
+  // without mistaking a transient retry for abandoned work.
+  const stopped = retrying > 0 && pending === 0 && scheduled === 0 && inFlight === 0;
+  return retrying > 0 && (attempts >= WEDGED_RETRY_ATTEMPTS || stopped);
 }
 
 function assessDeployReadiness({ lock = {}, activeBots = {}, routine = null,

@@ -54,6 +54,7 @@
     let playbackContext;
     let playbackEnd = 0;
     let reconnectAttempt = 0;
+    let muted = true;
 
     function setStatus(text, state = '') {
       statusEl.textContent = text;
@@ -103,11 +104,17 @@
       };
       source.connect(processor);
       processor.connect(captureContext.destination);
-      setStatus('Listening — say “Nora” to talk', 'listening');
+      setStatus(muted ? 'Muted — type “Nora unmute” in chat' : 'Listening — say “Nora” to talk', muted ? '' : 'listening');
+    }
+
+    function stopPlayback() {
+      playbackEnd = 0;
+      if (playbackContext && playbackContext.state !== 'closed') playbackContext.close().catch(() => {});
+      playbackContext = null;
     }
 
     function playAudio(base64) {
-      if (!base64) return;
+      if (!base64 || muted) return;
       if (!playbackContext || playbackContext.state === 'closed') {
         playbackContext = new AudioContext({ sampleRate: targetRate });
         playbackEnd = 0;
@@ -152,8 +159,15 @@
       relay.onmessage = event => {
         let message;
         try { message = JSON.parse(event.data); } catch { return; }
-        if (message.type === 'session.started') setStatus('Listening — say “Nora” to talk', 'listening');
+        if (message.type === 'session.started') {
+          setStatus(muted ? 'Muted — type “Nora unmute” in chat' : 'Listening — say “Nora” to talk', muted ? '' : 'listening');
+        }
         if (message.type === 'session.output_audio.delta') playAudio(message.delta);
+        if (message.type === 'nora.mute') {
+          muted = message.muted !== false;
+          if (muted) stopPlayback();
+          setStatus(muted ? 'Muted — type “Nora unmute” in chat' : 'Listening — say “Nora” to talk', muted ? '' : 'listening');
+        }
         if (message.type === 'error') {
           console.error('GPT-Live error', message.error);
           setStatus('Transcribing — voice unavailable');

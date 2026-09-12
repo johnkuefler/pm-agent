@@ -7,7 +7,7 @@ async function joinMeeting() {
     return;
   }
   status.className = 'toast ok';
-  status.textContent = 'Sending transcription bot...';
+  status.textContent = 'Sending Nora...';
   try {
     const response = await api('/join', {
       method: 'POST',
@@ -17,7 +17,7 @@ async function joinMeeting() {
     const result = await response.json();
     if (result.bot_id) {
       status.className = 'toast ok';
-      status.textContent = `Nora is joining silently to transcribe. Bot ID: ${result.bot_id}`;
+      status.textContent = `Nora is joining muted to transcribe. Type “Nora unmute” in the meeting chat when you want her voice. Bot ID: ${result.bot_id}`;
       loadActiveBots();
       return;
     }

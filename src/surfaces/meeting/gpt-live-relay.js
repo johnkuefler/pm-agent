@@ -85,6 +85,7 @@ function createGptLiveMeetingRelay({
     }
 
     client.send(JSON.stringify({ type: 'nora.session', bot_id: botId, model, voice }));
+    client.send(JSON.stringify({ type: 'nora.mute', muted: session?.muted !== false }));
 
     provider.on('open', () => {
       provider.send(JSON.stringify({

@@ -68,6 +68,20 @@ test('Recall bot config enables the secured GPT-Live webpage for new joins', () 
   });
   assert.deepEqual(config.recording_config.include_bot_in_recording, { audio: true });
   assert.equal(config.recording_config.video_separate_png, undefined);
+  assert.deepEqual(config.recording_config.realtime_endpoints[1], {
+    type: 'webhook',
+    url: 'https://nora.example.com/webhook/chat-control',
+    events: ['participant_events.chat_message'],
+  });
+});
+
+test('meeting mute parser accepts only explicit short Nora controls', () => {
+  assert.equal(helpers.parseNoraMuteCommand('Nora unmute'), 'unmute');
+  assert.equal(helpers.parseNoraMuteCommand('@Nora, mute.'), 'mute');
+  assert.equal(helpers.parseNoraMuteCommand('unmute Nora'), 'unmute');
+  assert.equal(helpers.parseNoraMuteCommand('Can Nora unmute for this part?'), null);
+  assert.equal(helpers.parseNoraMuteCommand('Please tell Nora to mute the recording'), null);
+  assert.equal(helpers.parseNoraMuteCommand('unmute'), null);
 });
 
 test('meeting voice credentials discard the obsolete voice system and expire bounded sessions', () => {
@@ -90,6 +104,7 @@ test('meeting avatar carries only the narrow GPT-Live audio bridge', () => {
   assert.match(avatar, /id="avatar"[^>]*>N</);
   assert.match(avatar, /session\.input_audio\.append/);
   assert.match(avatar, /session\.output_audio\.delta/);
+  assert.match(avatar, /Muted — type “Nora unmute” in chat/);
   assert.doesNotMatch(avatar, /screen.?share|participant_events|webhook\/chat/i);
 });
 
