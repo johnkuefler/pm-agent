@@ -86,7 +86,10 @@ test('the production recovery can clear one bounded outage backlog in a pass', a
   const runtime = createRecallTranscriptRecoveryRuntime({
     get: async url => ({ data: url.startsWith('download:') ? [] : finishedBot() }),
     recallBase: 'https://recall.test', apiKey: 'test', controlTimeoutMs: 1000,
-    listTranscripts: async () => Array.from({ length: 16 }, (_, index) => staleRow(`bot-${index}`)),
+    // This wrapper uses the real clock; fixed August rows age out of its 45-day window.
+    listTranscripts: async () => Array.from({ length: 16 }, (_, index) => ({
+      ...staleRow(`bot-${index}`), last_utterance_at: new Date(Date.now() - 3600000).toISOString(),
+    })),
     getTranscript: async () => ({ transcript: [] }),
     saveTranscript: async botId => persisted.push(botId),
     sessions, chatSessions: {}, checkpointStalled: new Map(), checkpointAttempts: new Map(),

@@ -5059,7 +5059,7 @@ async function runNativeHourlyTask(task, {
   };
   try {
     const { response, firedTools } = await runClaudeToolLoop(
-      reqBody, headers, toolset.executors, 4, {
+      reqBody, { headers }, toolset.executors, 4, {
         post,
         deadlineMs: taskBudgetMs,
         providerTimeoutMs: Math.min(15000, taskBudgetMs),

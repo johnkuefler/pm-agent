@@ -112,6 +112,7 @@ test('native hourly task execution finishes one bounded task through an auditabl
   const previousKey = process.env.ANTHROPIC_API_KEY;
   process.env.ANTHROPIC_API_KEY = 'test-key';
   const controller = new AbortController();
+  const requests = [];
   const responses = [
     { stop_reason: 'tool_use', content: [
       { type: 'tool_use', id: 'work-1', name: 'perform_explicit_work', input: {} },
@@ -144,8 +145,21 @@ test('native hourly task execution finishes one bounded task through an auditabl
         writeToolNames: ['perform_explicit_work', 'nora_complete_local_task'],
         meta: {},
       }),
-      post: async () => ({ data: responses.shift() }),
+      post: async (url, body, config) => {
+        requests.push({ url, config });
+        return { data: responses.shift() };
+      },
     });
+    assert.equal(requests.length, 3);
+    for (const { url, config } of requests) {
+      assert.equal(url, 'https://api.anthropic.com/v1/messages');
+      assert.equal(config.headers?.['x-api-key'], 'test-key',
+        'Axios only sends authentication nested under config.headers');
+      assert.equal(config.headers?.['anthropic-version'], '2023-06-01');
+      assert.equal(config.headers?.['Content-Type'], 'application/json');
+      assert.ok(config.signal);
+      assert.ok(config.timeout > 0);
+    }
     assert.equal(result.status, 'completed');
     assert.equal(result.completed, true);
     assert.deepEqual(result.tools_executed,
