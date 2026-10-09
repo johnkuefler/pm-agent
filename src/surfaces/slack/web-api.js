@@ -33,7 +33,7 @@ async function getSlackUserIdentity(userId, { signal = undefined } = {}) {
     const profile = member.profile || {};
     const name = profile.real_name || profile.display_name || member.real_name || member.name || null;
     const identity = Object.freeze({
-      id: String(member.id || userId), name,
+      id: String(member.id || userId), name, email: profile.email || null,
       isBot: member.is_bot === true, isAppUser: member.is_app_user === true,
       deleted: member.deleted === true,
       fullMember: member.is_restricted !== true && member.is_ultra_restricted !== true,

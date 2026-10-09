@@ -1,4 +1,5 @@
 'use strict';
+const { validateTaskSchedule } = require('./teamwork-task-request');
 
 const WRITE_TOOL_NAMES = Object.freeze([
   'teamwork_create_project',
@@ -91,8 +92,8 @@ function planToolSchema() {
       start_date: { type: 'string', description: 'YYYY-MM-DD' },
       due_date: { type: 'string', description: 'YYYY-MM-DD' },
       priority: { type: 'string', enum: ['low', 'medium', 'high'] },
-      estimate_minutes: { type: 'integer', minimum: 0, maximum: 100000 },
-    }, required: ['name'],
+      estimate_minutes: { type: 'integer', minimum: 1, maximum: 100000 },
+    }, required: ['name', 'start_date', 'due_date', 'estimate_minutes'],
   };
   return { type: 'object', properties: {
     project_id: { type: 'string' },
@@ -228,6 +229,7 @@ function createTeamworkPlanningTools({ send, get, ymd }) {
             description: list.description ? String(list.description).trim() : '',
             milestone_title: list.milestone_title ? required(list.milestone_title, 'milestone_title') : '',
             tasks: list.tasks.map(task => {
+              validateTaskSchedule(task);
               const startDate = projectDate(task.start_date, `${task.name} start_date`, ymd);
               const dueDate = projectDate(task.due_date, `${task.name} due_date`, ymd);
               if (startDate && dueDate && startDate > dueDate) {

@@ -1893,6 +1893,8 @@ async function twApiSend(method, pathAndQuery, body, { signal, timeoutMs = 15000
   return r.data;
 }
 const twYmd = (s) => s ? String(s).replace(/[^0-9]/g, '').slice(0, 8) : undefined; // YYYY-MM-DD → YYYYMMDD
+const { createVerifiedTaskTool } = require('./src/integrations/teamwork-task-request');
+const { buildTaskIntake, taskDetailContinuation, taskRequestBindings } = require('./src/surfaces/slack/task-intake');
 // Teamwork v3 returns related objects as bare {id, type} refs and puts the real data in a
 // top-level `included` sideload (requested via ?include=…). slimTwTask resolves assignee and
 // tasklist refs to names using that sideload.
@@ -2190,27 +2192,7 @@ const TEAMWORK_TOOLS = [
 
   // ── WRITE tools — Nora can create/update tasks, mark them done, and comment. Use ONLY when
   //    explicitly asked to create or change something. No delete tool exists (by design).
-  { definition: {
-      name: 'teamwork_create_task',
-      description: 'Create a NEW task in a Teamwork tasklist. Tasks live inside tasklists, so first resolve the project (teamwork_find_projects) and its tasklist (teamwork_list_tasklists). To assign someone, get their id via teamwork_list_people. Use ONLY when explicitly asked to add/create a task. After it succeeds, tell the user what you created.',
-      input_schema: { type: 'object', properties: {
-        tasklist_id: { type: 'string', description: 'required — the tasklist to add the task to' },
-        name: { type: 'string', description: 'the task title' },
-        assignee_ids: { type: 'array', items: { type: 'string' }, description: 'optional Teamwork person ids' },
-        due_date: { type: 'string', description: 'optional, YYYY-MM-DD' },
-        priority: { type: 'string', enum: ['low', 'medium', 'high'], description: 'optional' },
-        description: { type: 'string', description: 'optional detail' }
-      }, required: ['tasklist_id', 'name'] }
-    },
-    execute: async ({ tasklist_id, name, assignee_ids, due_date, priority, description }) => {
-      const item = { content: name };
-      if (assignee_ids && assignee_ids.length) item['responsible-party-id'] = assignee_ids.join(',');
-      if (due_date) item['due-date'] = twYmd(due_date);
-      if (priority) item.priority = priority;
-      if (description) item.description = description;
-      const d = await twApiSend('post', `/tasklists/${encodeURIComponent(tasklist_id)}/tasks.json`, { 'todo-item': item });
-      return { ok: true, task_id: d.id || d.taskId || (d.task && d.task.id), status: d.STATUS || 'OK' };
-    } },
+  createVerifiedTaskTool({ get: twApiGet, send: twApiSend }),
   { definition: {
       name: 'teamwork_update_task',
       description: 'Update an existing task: rename, change due date, reassign, set priority or progress. Use ONLY when explicitly asked to change a task. Resolve the task id first (teamwork_list_tasks / teamwork_find_projects). Report what you changed.',
@@ -2925,6 +2907,7 @@ function shouldRespond(event) {
   if (event.type === 'message' && noraBotUserId && event.text && event.text.includes(`<@${noraBotUserId}>`)) {
     return false;
   }
+  if (taskDetailContinuation(event, loadMarkers(), noraBotUserId)) return true;
   // Follow-up in an active (joined + not stale) thread
   if (event.thread_ts && isThreadActive(event.channel, event.thread_ts)) return true;
   return false;
@@ -3616,7 +3599,7 @@ async function processSlackWebhookEvent(body, sourceAttestation = null) {
   const isDM = event.channel_type === 'im' || event.channel_type === 'mpim';
   const isMention = event.type === 'app_mention';
 
-  if (!isDM && !isMention) {
+  if (!isDM && !isMention && !taskDetailContinuation(event, loadMarkers(), noraBotUserId)) {
     if (isObviouslyNotForNora(text, noraBotUserId)) {
       console.log(`💬 Slack skip (heuristic): ${query.slice(0, 60)}`);
       await slackConversationAudit.mark(auditInteractionId, {
@@ -3855,6 +3838,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, rootT
     const mcpBindings = attachLiveTools
       ? mcpManager.bindings({ financialApproved: isDirect ? financialApproved : false, allowWrites: isDirect, fleetAuthority })
       : { claudeTools: [], executors: {}, inventory: [], meta: {} };
+    Object.assign(mcpBindings, taskRequestBindings(mcpBindings));
     recordRuntimeSituationalAffordance({ surface: 'slack', contextKind: 'direct',
       direct: isDirect, financialApproved, requester: user, interactionRef: turnRef, mcp: mcpBindings,
       toolsAttached: attachLiveTools });
@@ -3897,6 +3881,13 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, rootT
       for (const t of TEAMWORK_TOOLS) {
         if (TW_WRITE.has(t.definition.name) && !isDirect) continue;
         toolDefs.push(t.definition); toolExecutors[t.definition.name] = t.execute;
+      }
+      const intake = buildTaskIntake({ channel, thread: isDM ? null : threadTs, user,
+        identity: requesterIdentity, get: twApiGet, send: twApiSend, loadMarkers, mutateMarkers });
+      tail += '\n\n' + intake.prompt;
+      for (const t of intake.tools) {
+        if (!toolDefs.some(d => d.name === t.definition.name)) toolDefs.push(t.definition);
+        toolExecutors[t.definition.name] = t.execute;
       }
     }
     // Live Slack send lets her post elsewhere when explicitly asked.

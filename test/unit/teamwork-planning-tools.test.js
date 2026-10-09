@@ -150,7 +150,7 @@ test('batch plan refuses same-name task drift instead of overwriting or duplicat
   });
   const result = await byName(tools, 'teamwork_apply_project_plan').execute({
     project_id: '77', tasklists: [{ name: 'Build', tasks: [{
-      name: 'Implement', due_date: '2026-09-15',
+      name: 'Implement', start_date: '2026-09-01', due_date: '2026-09-15', estimate_minutes: 60,
     }] }],
   });
 
