@@ -107,6 +107,10 @@ function createContextCollector({ teamworkTools, get, slackToken, ownEmail, fina
       if (!find) break;
       const result = await read('Teamwork project search', () => find({ query }, { signal, timeoutMs: 8000 }));
       if (Array.isArray(result)) candidates.push(...result);
+      else if (Array.isArray(result?.projects)) {
+        candidates.push(...result.projects);
+        if (!result.search_complete) gaps.push('Teamwork project search incomplete.');
+      }
     }
     const projects = selectProjects(candidates, terms, meta.title);
     if (!projects.length) gaps.push('No unambiguous active Teamwork client/project match.');

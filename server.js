@@ -1894,6 +1894,7 @@ async function twApiSend(method, pathAndQuery, body, { signal, timeoutMs = 15000
 }
 const twYmd = (s) => s ? String(s).replace(/[^0-9]/g, '').slice(0, 8) : undefined; // YYYY-MM-DD → YYYYMMDD
 const { createVerifiedTaskTool } = require('./src/integrations/teamwork-task-request');
+const { createProjectSearchTool } = require('./src/integrations/teamwork-project-search');
 const { buildTaskIntake, taskDetailContinuation, taskRequestBindings } = require('./src/surfaces/slack/task-intake');
 // Teamwork v3 returns related objects as bare {id, type} refs and puts the real data in a
 // top-level `included` sideload (requested via ?include=…). slimTwTask resolves assignee and
@@ -1968,20 +1969,7 @@ async function teamworkTeamCapacity({ start_date, end_date, min_free_hours, user
 
 // Each tool: an Anthropic tool definition + an executor that returns a slimmed result.
 const TEAMWORK_TOOLS = [
-  { definition: {
-      name: 'teamwork_find_projects',
-      description: 'Find active Teamwork projects by name, or list active projects if no query. Use this first to resolve a project name to its id. Returns id, name, company, status.',
-      input_schema: { type: 'object', properties: { query: { type: 'string', description: 'optional name search; omit to list active projects' } } }
-    },
-    execute: async ({ query }, request = {}) => {
-      const q = query ? `&searchTerm=${encodeURIComponent(query)}` : '';
-      const d = await twApiGet(`/projects/api/v3/projects.json?status=ACTIVE&pageSize=50&include=companies${q}`, request);
-      const companies = d?.included?.companies || {};
-      return (d?.projects || []).slice(0, 50).map(p => ({
-        id: p.id, name: p.name, status: p.status,
-        company: (p.company?.id && companies[p.company.id]?.name) || p.company?.name || ''
-      }));
-    } },
+  createProjectSearchTool({ get: twApiGet }),
   { definition: {
       name: 'teamwork_get_project',
       description: 'Get a single Teamwork project\'s details by id: name, company, status, description, dates.',
