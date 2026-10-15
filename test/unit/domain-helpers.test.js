@@ -23,6 +23,38 @@ test('financial content detector catches sensitive values without flagging ordin
   assert.equal(helpers.containsFinancialContent('The launch is on Friday'), false);
 });
 
+test('task effort estimates and scheduling questions do not trigger financial refusal', () => {
+  const safe = [
+    'Hey nora can you get a task made for AI guy to post this job to the LimeLight website, due today\nhttps://limelightmarketing.bamboohr.com/careers/67?source=aWQ9MjM%3D',
+    'What time estimate should I use: 30 minutes or 1 hour?\nShould it start today and be due today?',
+    'Estimate: 30 minutes\nStart: 2026-10-15\nDue: 2026-10-15',
+    'Estimate: 1.5 hours', 'Estimate: 30-60 minutes', 'Estimate: 1 to 2 hrs',
+    'Estimate: 1h 30m', 'Estimate: 45min', 'Estimate: 2 days',
+    'Estimate: 1,500 minutes', 'Estimate: 2 weeks',
+  ];
+  for (const text of safe) assert.equal(helpers.containsFinancialContent(text), false, text);
+});
+
+test('explicit time units never suppress monetary, budget, rate or compensation checks', () => {
+  const sensitive = [
+    'Estimate: $30 minutes', 'Estimate: 30 dollars per hour', 'Estimate: USD 30 hours',
+    'Estimate: 5000', 'Estimate: 5K', 'Estimate of 1,500',
+    'Estimate: 30 minutes, cost $50', 'Estimate: 30 minutes at a rate of 150',
+    'Estimate: 30 minutes\nBudget: 5000', 'Estimate: 1 hour\nSalary: 80000',
+    'Estimate: 30 hours\nOur margin is 31%', 'Compensation: 60000',
+    'Estimate: 2 hours plus 5000', 'Budget estimate: 30 hours',
+    'Fee: 200', 'Invoice: 1000', 'Retainer: 2500', 'Revenue: 500000',
+  ];
+  for (const text of sensitive) assert.equal(helpers.containsFinancialContent(text), true, text);
+});
+
+test('financial egress protections remain wired for normal and tool-based Slack delivery', () => {
+  const source = readServerSource();
+  assert.match(source, /if \(containsFinancialContent\(text\)\) return \{ error: 'Refused/);
+  assert.equal((source.match(/if \(!financialApproved && containsFinancialContent\(reply\)\)/g) || []).length, 2);
+  assert.match(source, /Task duration estimates with explicit time units/);
+});
+
 test('meeting URL normalization handles Recall string and object shapes', () => {
   assert.equal(helpers.normalizeMeetingUrl('https://zoom.us/j/123'), 'https://zoom.us/j/123');
   assert.equal(helpers.normalizeMeetingUrl({ link: 'https://meet.google.com/abc' }), 'https://meet.google.com/abc');

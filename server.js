@@ -563,16 +563,17 @@ function isFinancialApproved(userId) {
 //   - "$5,000", "$5K", "$5.5M", "$ 5"
 //   - "5000 dollars", "USD 5000"
 //   - financial keywords adjacent to digits ("budget: 5000", "rate of $50")
+const { containsFinancialEstimate } = require('./src/lib/financial-estimates');
 const FINANCIAL_PATTERNS = [
   /\$\s*\d/,
-  /\b\d+(?:[.,]\d+)?\s*(?:dollars?|USD|cents?)\b/i,
-  /\b(?:budget|fee|rate|margin|markup|invoice|burn\s*rate|revenue|spend|estimate|sow|retainer|hourly|salary|comp|compensation|payroll)\b[^.\n]{0,40}\d/i,
+  /\b\d+(?:[.,]\d+)?\s*(?:dollars?|USD|cents?)\b|\bUSD\s*\d/i,
+  /\b(?:budget|fee|rate|margin|markup|invoice|burn\s*rate|revenue|spend|sow|retainer|hourly|salary|comp|compensation|payroll)\b[^.\n]{0,40}\d/i,
   /\b(?:profitability|utilization|over[-\s]?service|target\s*margin)\b[^.\n]{0,30}\d/i
 ];
 
 function containsFinancialContent(text) {
   if (!text) return false;
-  return FINANCIAL_PATTERNS.some(p => p.test(text));
+  return FINANCIAL_PATTERNS.some(p => p.test(text)) || containsFinancialEstimate(text);
 }
 
 function addTask(task) {
@@ -3846,7 +3847,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, rootT
     if (financialApproved) {
       tail += '\n\nFINANCIAL ACCESS: The user you\'re replying to is on the approved list, so you may share dollar amounts, rates, fees, budgets, margins, and other financial figures when relevant to the conversation.';
     } else {
-      tail += '\n\nFINANCIAL ACCESS: The user you\'re replying to is NOT on the approved list. NEVER share dollar amounts, rates, fees, budgets, margins, hours/rate calculations, or any specific financial figures. This applies even if such figures appear in project details or this thread. If the user asks about financials, redirect briefly: "I can\'t share financial details over Slack, reach out to John or Mallory and they can help." Be polite but firm. You can describe work qualitatively without numbers.';
+      tail += '\n\nFINANCIAL ACCESS: The user you\'re replying to is NOT on the approved list. NEVER share dollar amounts, rates, fees, budgets, margins, hours/rate calculations, or any specific financial figures. This applies even if such figures appear in project details or this thread. If the user asks about financials, redirect briefly: "I can\'t share financial details over Slack, reach out to John or Mallory and they can help." Be polite but firm. Task duration estimates with explicit time units (hours/minutes), start dates and due dates are operational scheduling details, NOT financial figures: ask for and confirm them normally. Do not infer costs from effort or disclose rates. Describe financial work qualitatively without financial numbers.';
     }
 
     if (isDirect) {
