@@ -209,7 +209,10 @@ async function postSlackMessageReceipt(target, text, threadTs, { post = axios.po
     headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: 5000,
   }).catch(e => ({ data: { ok: false, error: e.message } }));
   return { ok: r.data?.ok === true, channel: r.data?.channel || channelId,
-    ts: r.data?.ts || null, error: r.data?.error || null };
+    ts: r.data?.ts || null, error: r.data?.error || null,
+    retry_safe: ['invalid_auth', 'token_revoked', 'not_authed', 'account_inactive',
+      'channel_not_found', 'not_in_channel', 'missing_scope', 'is_archived',
+      'ratelimited', 'msg_too_long', 'no_text'].includes(r.data?.error) };
 }
 
 function slackHistoryBoundary(value, field) {

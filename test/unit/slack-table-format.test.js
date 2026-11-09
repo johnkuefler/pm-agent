@@ -114,7 +114,7 @@ test('Slack direct-message delivery returns the durable channel and message rece
       return { data: { ok: true, channel: 'DMALLORY', ts: '1712345.0003' } };
     },
   });
-  assert.deepEqual(receipt, { ok: true, channel: 'DMALLORY', ts: '1712345.0003', error: null });
+  assert.deepEqual(receipt, { ok: true, channel: 'DMALLORY', ts: '1712345.0003', error: null, retry_safe: false });
   assert.equal(calls.length, 2);
   assert.equal(calls[1].payload.channel, 'DMALLORY');
 });

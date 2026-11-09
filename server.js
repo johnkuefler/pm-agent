@@ -100,6 +100,7 @@ const { createRecurringJobRegistry, quarantineMessage } = require('./src/runtime
 const { createAdaptiveWorkerLoop } = require('./src/runtime/adaptive-worker-loop');
 const { boundedNativeTask, buildNativeTaskPacket } = require('./src/runtime/native-task-packet');
 const { createTaskSlackSourceTool } = require('./src/runtime/task-slack-source-tool');
+const { createScheduledResultDelivery } = require('./src/runtime/scheduled-result-delivery');
 const { captureMarkerPersistence, diffMarkerPersistence } = require('./src/runtime/marker-delta');
 const { captureTaskPersistence, diffTaskPersistence } = require('./src/runtime/task-delta');
 const { captureSlackThreadPersistence, diffSlackThreadPersistence } =
@@ -260,12 +261,13 @@ function loadMarkers() {
   try { return JSON.parse(fs.readFileSync(getMarkersPath(), 'utf8')); }
   catch { return {}; }
 }
-function saveMarkersFile(markers, delta = null) {
+function saveMarkersFile(markers, delta = null, { strict = false } = {}) {
   if (_dbReady) {
-    _cache.markers = markers;
+    if (!strict) _cache.markers = markers;
     if (delta && !delta.upserts.length && !delta.deleted_keys.length) return Promise.resolve();
     return _writeThrough('markers', () => delta
-      ? db.applyMarkerChanges(delta) : db.replaceAllMarkers(markers));
+      ? db.applyMarkerChanges(delta) : db.replaceAllMarkers(markers), { strict })
+      .then(() => { if (strict) _cache.markers = markers; });
   }
   const p = getMarkersPath();
   const tmp = `${p}.tmp-${process.pid}`;
@@ -275,12 +277,12 @@ function saveMarkersFile(markers, delta = null) {
 // Serialize marker mutations through their own in-process lock.
 // markers is a plain { key: {set_at, ...data} } object; mutator mutates it in place.
 let _markerMutationChain = Promise.resolve();
-function mutateMarkers(mutator) {
+function mutateMarkers(mutator, { strict = false } = {}) {
   const run = _markerMutationChain.then(async () => {
-    const markers = loadMarkers();
+    const markers = strict ? structuredClone(loadMarkers()) : loadMarkers();
     const before = captureMarkerPersistence(markers);
     const result = mutator(markers);
-    await saveMarkersFile(markers, diffMarkerPersistence(before, markers));
+    await saveMarkersFile(markers, diffMarkerPersistence(before, markers), { strict });
     return { result, markers };
   });
   _markerMutationChain = run.then(() => {}, () => {});
@@ -319,14 +321,18 @@ function loadTasks() {
   } catch { return []; }
 }
 
-function saveTasks(tasks) {
+function saveTasks(tasks, { strict = false } = {}) {
   if (_dbReady) {
+    const previous = _cache.tasks;
     _cache.tasks = tasks;
     const snapshot = JSON.parse(JSON.stringify(tasks));
     return _writeThrough('tasks', async () => {
       const delta = diffTaskPersistence(_persistedTaskState, snapshot);
       await db.applyTaskChanges(delta);
       _persistedTaskState = captureTaskPersistence(snapshot);
+    }, { strict }).catch(error => {
+      if (strict && _cache.tasks === tasks) _cache.tasks = previous;
+      throw error;
     });
   }
   fs.writeFileSync(getTasksPath(), JSON.stringify(tasks, null, 2));
@@ -2773,7 +2779,8 @@ async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6, opts
         if (!exec) throw new Error(`unknown tool ${tu.name}`);
         const toolWriteStartMinimumMs = Math.max(1000,
           Number(opts.writeStartMinimumByTool?.[tu.name]) || writeStartMinimumMs);
-        const availableForTool = remaining() - finalizationReserveMs;
+        const terminal = !writeCapable && opts.terminalToolNames?.includes(tu.name);
+        const availableForTool = terminal ? Math.max(1, remaining()) : remaining() - finalizationReserveMs;
         if (availableForTool <= 0 || (writeCapable && availableForTool < toolWriteStartMinimumMs)) {
           const error = new Error(writeCapable
             ? `not started: ${tu.name} did not have a safe completion window before the interactive deadline`
@@ -2802,6 +2809,9 @@ async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6, opts
             writeReceiptTimeoutMs, () => persistActionReceipt());
         }
         if (succeeded) firedTools.push(tu.name);
+        // A memory-only handoff already contains the finished result. Do not spend another
+        // provider round trip (or a final-answer reserve) before the scheduler can deliver it.
+        if (succeeded && terminal) return { response, firedTools, actionExecutionIds };
         content = JSON.stringify(result);
       } catch (e) {
         const uncertainWriteFailure = writeCapable && durableWriteReceipts
@@ -4737,7 +4747,7 @@ registerTaskRoutes(app, {
 
 let _hourlyFallbackInFlight = false;
 let _hourlyFallbackLast = null;
-const HOURLY_FALLBACK_RUNTIME_BUDGET_MS = 60000;
+const HOURLY_FALLBACK_RUNTIME_BUDGET_MS = 180000;
 
 function hourlyFallbackBudget(deadlineAt, capMs, label, reserveMs = 0) {
   const remainingMs = Number(deadlineAt) - Date.now() - Math.max(0, Number(reserveMs) || 0);
@@ -4819,6 +4829,7 @@ function nativeTaskReady(task, markers = loadMarkers(), now = Date.now()) {
   if (!task || !isTaskEligibleNow(task, new Date(now))
     || (task.assignee && !/\bnora\b/i.test(task.assignee))) return false;
   const attempt = markers[nativeTaskAttemptKey(task.id)];
+  if (attempt?.scheduled_for !== undefined && attempt.scheduled_for !== (task.scheduled_for || null)) return true;
   const retryAt = new Date(attempt?.next_retry_at || 0).getTime();
   return !Number.isFinite(retryAt) || retryAt <= Number(now);
 }
@@ -4828,20 +4839,24 @@ async function recordNativeTaskAttempt(task, outcome, now = Date.now()) {
   const key = nativeTaskAttemptKey(task.id);
   const at = new Date(now).toISOString();
   return (await mutateMarkers(markers => {
-    const previous = markers[key] || {};
+    const prior = markers[key] || {};
+    const previous = prior.scheduled_for === (task.scheduled_for || null) ? prior : {};
     const attempts = outcome.completed ? 0 : Math.max(0, Number(previous.attempts) || 0) + 1;
     const retryMs = outcome.completed ? 0
       : outcome.status === 'deferred' && /^preempted_by_|interactive_/.test(outcome.reason || '')
         ? 15 * 60 * 1000
-        : Math.min(NATIVE_TASK_RETRY_MAX_MS,
+        : ['scheduled_delivery_pending', 'task_result_not_completed'].includes(outcome.reason)
+          ? NATIVE_TASK_RETRY_BASE_MS : Math.min(NATIVE_TASK_RETRY_MAX_MS,
           NATIVE_TASK_RETRY_BASE_MS * (2 ** Math.min(5, Math.max(0, attempts - 1))));
     markers[key] = {
       set_at: at,
       task_id: task.id,
+      scheduled_for: task.scheduled_for || null,
       status: outcome.status,
       completed: outcome.completed === true,
       attempts,
       reason: outcome.reason || null,
+      detail: String(outcome.detail || outcome.note || '').slice(0, 500) || null,
       tools_executed: Array.isArray(outcome.tools_executed)
         ? outcome.tools_executed.slice(0, 20) : [],
       next_retry_at: retryMs ? new Date(Number(now) + retryMs).toISOString() : null,
@@ -4865,7 +4880,7 @@ function nativeHourlyMcpBindings() {
   };
 }
 
-function nativeHourlyTaskToolset(task, successfulActions) {
+function nativeHourlyTaskToolset(task, successfulActions, delivery = null) {
   const tools = []; const scheduledFor = task.scheduled_for;
   const executors = {};
   const writeToolNames = new Set();
@@ -4901,15 +4916,15 @@ function nativeHourlyTaskToolset(task, successfulActions) {
   if (fixedDeliveryChannel) {
     add({
       name: 'nora_deliver_task_result',
-      description: `Deliver the finished result to the task's fixed Slack destination (${fixedDeliveryChannel}). The destination cannot be changed by the model.`,
+      description: `Submit the finished result for delivery to the task's fixed Slack destination (${fixedDeliveryChannel}). This ends your work; the scheduler persists and sends it, then completes the occurrence only after a Slack receipt. The destination cannot be changed.`,
       input_schema: { type: 'object', properties: {
         text: { type: 'string', description: 'the finished, truthful result to deliver' },
       }, required: ['text'] },
     }, async ({ text }) => {
-      return localRuntimeApi('post', `/tasks/${encodeURIComponent(task.id)}/deliver`, { text: String(text || '').trim() }, 10000);
-    }, { write: true });
+      return delivery ? delivery.prepare({ text }) : { error: 'Scheduled delivery handoff unavailable.' };
+    });
   }
-  add({
+  if (!fixedDeliveryChannel) add({
     name: 'nora_reply_to_task_origin',
     description: 'Reply to the exact Slack channel/thread where this queued task originated. Use after completing the requested work when the task has a Slack source. The destination is fixed by the task; provide only the truthful result text.',
     input_schema: { type: 'object', properties: {
@@ -4947,6 +4962,7 @@ function nativeHourlyTaskToolset(task, successfulActions) {
     if (!successfulActions.size) {
       return { error: 'Completion refused: no successful external or delivery action is recorded in this run.' };
     }
+    if (fixedDeliveryChannel) return { error: 'Submit the finished result with nora_deliver_task_result; delivery will complete this occurrence.' };
     const current = loadTasks().find(item => item.id === task.id);
     if (current?.last_run && current.scheduled_for !== scheduledFor) return { ok: true, already: true };
     if (!current || current.status !== 'pending') {
@@ -4971,9 +4987,12 @@ async function runNativeHourlyTask(task, {
   deadlineAt = Date.now() + HOURLY_FALLBACK_RUNTIME_BUDGET_MS,
   post = axios.post,
   toolsetFactory = nativeHourlyTaskToolset,
+  deliver = body => localRuntimeApi('post', `/tasks/${encodeURIComponent(task.id)}/deliver`, body, 15000),
   beginBackground = label => interactivePerformance.beginBackground(label),
 } = {}) {
   if (!task) return { status: 'not_due', task_id: null };
+  const delivery = task.metadata?.destination_channel
+    ? createScheduledResultDelivery(task, { loadMarkers, mutateMarkers, deliver }) : null;
   if (!process.env.ANTHROPIC_API_KEY) {
     return { status: 'deferred', task_id: task.id, reason: 'anthropic_api_key_unavailable' };
   }
@@ -5002,7 +5021,7 @@ async function runNativeHourlyTask(task, {
   let taskBudgetMs;
   try {
     taskBudgetMs = hourlyFallbackBudget(
-      deadlineAt, 55000, 'Native hourly task execution', 10000);
+      deadlineAt, 120000, 'Native hourly task execution', 25000);
   } catch (error) {
     return { status: 'deferred', task_id: task.id, reason: error.code || 'insufficient_runtime_budget' };
   }
@@ -5013,7 +5032,7 @@ async function runNativeHourlyTask(task, {
   }
   const successfulActions = new Set(executionHistory.succeeded_writes
     .map(item => item.tool_name));
-  const toolset = toolsetFactory(task, successfulActions);
+  const toolset = toolsetFactory(task, successfulActions, delivery);
   const taskPacket = {
     ...(await buildNativeTaskPacket(task, { resolveChannelName })),
     prior_verified_write_receipts: executionHistory.succeeded_writes,
@@ -5027,6 +5046,7 @@ async function runNativeHourlyTask(task, {
       'Do the requested work now with the supplied tools. Do not perform unrelated cleanup, proactive reminders, experiments, or self-modification.',
       'This run may draft Gmail but may never send Gmail. Never send an external email. Slack, Teamwork, and calendar writes are allowed only when the queued task explicitly requests them.',
       'Use nora_reply_to_task_origin when the requester needs the result in the original Slack thread.',
+      'When a fixed delivery destination is present, finish with nora_deliver_task_result containing the complete message. The scheduler handles delivery and completion after this terminal handoff. Do not also reply to the origin.',
       'Call nora_complete_local_task only after a preceding tool verifiably produced or delivered the requested outcome. If access, context, or time is insufficient, leave the task pending and explain the blocker in your final audit note.',
       'The task packet may include prior_verified_write_receipts from an earlier interrupted run. Treat those as completed side effects: never repeat them. If they already satisfy the task, call nora_complete_local_task directly.',
       'Never claim an action completed from intent, a plan, or an error response. Work on no other task.',
@@ -5041,15 +5061,17 @@ async function runNativeHourlyTask(task, {
     'anthropic-version': '2023-06-01',
   };
   try {
+    if (delivery?.hasPrepared()) return await delivery.flush();
     const { response, firedTools } = await runClaudeToolLoop(
       reqBody, { headers }, toolset.executors, 8, {
         post,
         deadlineMs: taskBudgetMs,
-        providerTimeoutMs: Math.min(15000, taskBudgetMs),
+        providerTimeoutMs: Math.min(30000, taskBudgetMs),
         toolTimeoutMs: 22000,
         writeStartMinimumMs: 15000,
         writeStartMinimumByTool: { nora_complete_local_task: 5000 },
         writeToolNames: toolset.writeToolNames,
+        terminalToolNames: delivery ? ['nora_deliver_task_result'] : [],
         durableWriteReceipts: true,
         writeReceiptTimeoutMs: 6000,
         deferredMeta: toolset.meta,
@@ -5058,7 +5080,8 @@ async function runNativeHourlyTask(task, {
           interaction_ref: task.id },
         signal: lease.signal,
       });
-    const completed = firedTools.includes('nora_complete_local_task') || firedTools.includes('nora_deliver_task_result');
+    if (delivery?.hasPrepared()) return await delivery.flush();
+    const completed = firedTools.includes('nora_complete_local_task');
     const finalText = (response.data?.content || []).filter(block => block.type === 'text')
       .map(block => block.text).join(' ').trim();
     return {
@@ -5067,7 +5090,7 @@ async function runNativeHourlyTask(task, {
       completed,
       tools_executed: firedTools,
       note: finalText.slice(0, 500) || null,
-      reason: lease.wasPreempted() ? `preempted_by_${lease.preemptedBy()}` : null,
+      reason: lease.wasPreempted() ? `preempted_by_${lease.preemptedBy()}` : completed ? null : 'task_result_not_completed',
     };
   } catch (error) {
     return {
@@ -6473,7 +6496,7 @@ async function completePostListenStartup(background) {
       if (failures.length) {
         throw new AggregateError(failures, `${failures.length} recurring runtime lane(s) failed`);
       }
-    }, { initialDelayMs: 20000, timeoutMs: 60000 });
+    }, { initialDelayMs: 20000, timeoutMs: 210000 });
     scheduleStartupBackgroundTask('startup deferred job worker', 5000, () => startJobWorker()); // deferred-tool background jobs (ImageGen etc.)
   }
   setServiceReadiness('ready', { ready: true });

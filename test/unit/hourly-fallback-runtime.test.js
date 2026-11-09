@@ -235,3 +235,46 @@ test('recurring tasks never reuse receipts from a completed prior occurrence', (
   assert.deepEqual(result.succeeded_writes.map(r=>r.execution_id),['current']);
   assert.deepEqual(result.uncertain_writes.map(r=>r.execution_id),['uncertain-prior']);
 });
+
+test('scheduled delivery gets its own window after source reads exhaust the model write reserve', async t => {
+  const oldKey = process.env.ANTHROPIC_API_KEY;
+  process.env.ANTHROPIC_API_KEY = 'test';
+  let now = Date.now();
+  t.mock.method(Date, 'now', () => now);
+  let calls = 0; let delivered = 0;
+  const controller = new AbortController();
+  try {
+    const result = await __test.runNativeHourlyTask({ id: 'late-agenda', status: 'pending',
+      metadata: { destination_channel: 'CAGENDA' }, action: 'Prepare agenda' }, {
+      deadlineAt: now + 80000,
+      beginBackground: () => ({ allowed: true, signal: controller.signal,
+        wasPreempted: () => false, preemptedBy: () => null, release() {} }),
+      toolsetFactory: (task, actions, handoff) => {
+        const native = __test.nativeHourlyTaskToolset(task, actions, handoff);
+        assert.ok(!native.writeToolNames.includes('nora_deliver_task_result'));
+        native.tools.push({ name: 'read_source' });
+        native.executors.read_source = async () => ({ evidence: 'Verified wins' });
+        return native;
+      },
+      post: async () => {
+        calls++;
+        now += calls === 5 ? 19000 : 8000;
+        return { data: { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: String(calls),
+          name: calls === 5 ? 'nora_deliver_task_result' : 'read_source',
+          input: calls === 5 ? { text: 'Verified wins' } : { source: calls } }] } };
+      },
+      deliver: async body => {
+        delivered++;
+        assert.equal(body.text, 'Verified wins');
+        assert.match(body.scope, /^[a-f0-9]{64}$/);
+        return { ok: true, delivery: { ts: '123.456' } };
+      },
+    });
+    assert.equal(result.completed, true);
+    assert.equal(delivered, 1);
+    assert.equal(calls, 5, 'no extra model round trip after the finished message');
+  } finally {
+    if (oldKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = oldKey;
+  }
+});

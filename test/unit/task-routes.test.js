@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { registerTaskRoutes } = require('../../src/routes/registerTaskRoutes');
+const { taskDeliveryScope } = require('../../src/runtime/scheduled-result-delivery');
 
 function harness(seed = [], overrides = {}) {
   const routes = new Map();
@@ -65,12 +66,12 @@ test('deleting a task invokes the lifecycle callback so its commitment can be dr
   assert.match(ctx.calls.deleted[0].meta.deleted_at, /^\d{4}-\d{2}-\d{2}T/);
 });
 
-test('completing a task invokes the lifecycle callback exactly once', () => {
+test('completing a task invokes the lifecycle callback exactly once', async () => {
   const task = { id: 'task-2', action: 'Build artifact', status: 'pending' };
   const ctx = harness([task]);
   const res = response();
 
-  ctx.routes.get('patch:/tasks/:id/complete')(
+  await ctx.routes.get('patch:/tasks/:id/complete')(
     { params: { id: task.id }, body: { result: { status: 'review_ready' } } },
     res,
   );
@@ -148,6 +149,77 @@ test('scheduled Slack delivery refuses a task without a recorded destination', a
   assert.match(res.body.error, /no fixed Slack destination/i);
   assert.equal(ctx.calls.deliveries.length, 0);
   assert.equal(ctx.getTasks()[0].status, 'pending');
+});
+
+test('recurring delivery deduplicates the old occurrence after rollover and restart', async () => {
+  const task = { id: 'recurring', status: 'pending', recurrence: 'every:2:weeks:13:00',
+    scheduled_for: '2026-11-09T19:00:00Z', metadata: { destination_channel: 'CAGENDA' } };
+  const body = { text: 'Agenda', scope: taskDeliveryScope(task) };
+  const ctx = harness([task], { computeNextRun: () => '2026-11-23T19:00:00Z' });
+  const first = response();
+  await ctx.routes.get('post:/tasks/:id/deliver')({ params: { id: task.id }, body }, first);
+  assert.equal(first.body.rolled_to, '2026-11-23T19:00:00Z');
+  const restarted = harness(structuredClone(ctx.getTasks()));
+  const retry = response();
+  await restarted.routes.get('post:/tasks/:id/deliver')({ params: { id: task.id }, body }, retry);
+  assert.equal(retry.body.already, true);
+  assert.equal(restarted.calls.deliveries.length, 0);
+  assert.equal(restarted.calls.completed.length, 0);
+});
+
+test('a timeout or restart after selecting delivery blocks a blind duplicate send', async () => {
+  const task = { id: 'uncertain', status: 'pending', metadata: { destination_channel: 'CAGENDA' } };
+  const ctx = harness([task], { deliverSlack: async () => { throw new Error('socket timeout'); } });
+  const first = response();
+  await ctx.routes.get('post:/tasks/:id/deliver')({ params: { id: task.id }, body: { text: 'Agenda' } }, first);
+  assert.equal(first.statusCode, 500);
+  assert.equal(ctx.getTasks()[0].delivery_attempt.status, 'sending');
+  const restarted = harness(structuredClone(ctx.getTasks()));
+  const retry = response();
+  await restarted.routes.get('post:/tasks/:id/deliver')({ params: { id: task.id }, body: { text: 'Agenda' } }, retry);
+  assert.equal(retry.statusCode, 409);
+  assert.match(retry.body.error, /uncertain/);
+  assert.equal(restarted.calls.deliveries.length, 0);
+});
+
+test('delivery waits for durable intent and retries a confirmed Slack rejection safely', async () => {
+  const task = { id: 'auth-retry', status: 'pending', metadata: { destination_channel: 'CAGENDA' } };
+  const blocked = harness([task], { saveTasks: async () => { throw new Error('database down'); } });
+  const req = { params: { id: task.id }, body: { text: 'Agenda' } };
+  const failure = response();
+  await blocked.routes.get('post:/tasks/:id/deliver')(req, failure);
+  assert.equal(failure.statusCode, 500);
+  assert.equal(blocked.calls.deliveries.length, 0);
+  let sends = 0;
+  const ctx = harness([task], { deliverSlack: async () => ++sends === 1
+    ? { ok: false, error: 'invalid_auth', retry_safe: true }
+    : { ok: true, ts: '123.4' } });
+  const first = response();
+  await ctx.routes.get('post:/tasks/:id/deliver')(req, first);
+  assert.equal(first.statusCode, 502);
+  const second = response();
+  await ctx.routes.get('post:/tasks/:id/deliver')(req, second);
+  assert.equal(second.body.ok, true);
+  assert.equal(sends, 2);
+});
+
+test('receipt is retained if completion persistence fails and retry only completes the task', async () => {
+  const task = { id: 'completion-retry', status: 'pending', metadata: { destination_channel: 'CAGENDA' } };
+  let stored = [task]; let saves = 0;
+  const ctx = harness([], { loadTasks: () => structuredClone(stored), saveTasks: async next => {
+    if (++saves === 3) throw new Error('database down during completion');
+    stored = structuredClone(next);
+  } });
+  const req = { params: { id: task.id }, body: { text: 'Agenda' } };
+  const first = response();
+  await ctx.routes.get('post:/tasks/:id/deliver')(req, first);
+  assert.equal(first.statusCode, 500);
+  assert.ok(stored[0].delivery.ts);
+  const second = response();
+  await ctx.routes.get('post:/tasks/:id/deliver')(req, second);
+  assert.equal(second.body.already, true);
+  assert.equal(stored[0].status, 'done');
+  assert.equal(ctx.calls.deliveries.length, 1);
 });
 
 test('task creation records a fixed Slack destination and source thread', () => {

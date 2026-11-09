@@ -1,5 +1,7 @@
 'use strict';
 
+const { taskDeliveryScope, nextTaskOccurrence } = require('../runtime/scheduled-result-delivery');
+
 function cleanTaskResult(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const text = (input, max = 2000) => String(input || '').trim().slice(0, max);
@@ -76,11 +78,11 @@ function registerTaskRoutes(app, deps) {
     onTaskCreated, onTaskCompleted, onTaskDeleted, deliverSlack, readSlackSource } = deps;
   const deliveryChains = new Map();
 
-  function finishTask(tasks, task, resultValue) {
+  async function finishTask(tasks, task, resultValue) {
     if (resultValue) task.result = cleanTaskResult(resultValue);
     const completedAt = new Date().toISOString();
     if (task.recurrence) {
-      const next = computeNextRun(task.recurrence, new Date());
+      const next = nextTaskOccurrence(task, new Date(), computeNextRun);
       if (next) {
         if (task.delivery) task.last_delivery = task.delivery;
         delete task.delivery;
@@ -88,7 +90,7 @@ function registerTaskRoutes(app, deps) {
         task.scheduled_for = next;
         task.completed = null;
         task.status = 'pending';
-        saveTasks(tasks);
+        await saveTasks(tasks, { strict: true });
         if (onTaskCompleted) onTaskCompleted(task, { recurring: true, completed_at: completedAt });
         console.log(`Recurring task fired and rolled: ${task.id} ${task.action} -> next ${next}`);
         return { recurring: true, rolled_to: next };
@@ -97,7 +99,7 @@ function registerTaskRoutes(app, deps) {
     }
     task.status = 'done';
     task.completed = completedAt;
-    saveTasks(tasks);
+    await saveTasks(tasks, { strict: true });
     if (onTaskCompleted) onTaskCompleted(task, { recurring: false, completed_at: completedAt });
     console.log('Task completed:', task.id, task.action);
     return { recurring: false, rolled_to: null };
@@ -201,8 +203,8 @@ function registerTaskRoutes(app, deps) {
     res.json({ ok: true, id, scheduled_for: effectiveScheduledFor, recurrence: recurrence || null });
   });
 
-  app.patch('/tasks/:id/complete', requireAuth, (req, res) => {
-    const tasks = loadTasks();
+  app.patch('/tasks/:id/complete', requireAuth, async (req, res) => {
+    const tasks = structuredClone(loadTasks());
     const task = tasks.find(t => t.id === req.params.id);
     if (!task) return res.status(404).json({ error: 'task not found' });
     if (task.status === 'done') return res.json({ ok: true, already: true, task });
@@ -211,7 +213,7 @@ function registerTaskRoutes(app, deps) {
     } catch (error) {
       return res.status(400).json({ error: error.message });
     }
-    const completion = finishTask(tasks, task, task.result || null);
+    const completion = await finishTask(tasks, task, task.result || null);
     res.json({ ok: true, task, ...(completion.rolled_to ? { rolled_to: completion.rolled_to } : {}) });
   });
 
@@ -221,12 +223,26 @@ function registerTaskRoutes(app, deps) {
   app.post('/tasks/:id/deliver', requireAuth, async (req, res) => {
     try {
       const outcome = await withDeliveryLock(req.params.id, async () => {
-        const tasks = loadTasks();
+        let tasks = structuredClone(loadTasks());
         const task = tasks.find(t => t.id === req.params.id);
         if (!task) return { status: 404, body: { error: 'task not found' } };
+        const scope = taskDeliveryScope(task);
+        if (req.body?.scope && task.last_delivery?.scope === req.body.scope) {
+          return { status: 200, body: { ok: true, already: true, task, delivery: task.last_delivery } };
+        }
+        if (req.body?.scope && req.body.scope !== scope) {
+          return { status: 409, body: { error: 'task occurrence or instructions changed; discard the old prepared result' } };
+        }
         if (task.delivery?.provider === 'slack_bot' && task.delivery.ts) {
+          if (task.delivery.scope && task.delivery.scope !== scope) {
+            return { status: 409, body: { error: 'task changed during delivery; reconcile its recorded Slack receipt' } };
+          }
+          if (task.status !== 'done') await finishTask(tasks, task, task.result);
           return { status: 200, body: { ok: true, already: true, task,
-            delivery: task.delivery } };
+            delivery: task.delivery || task.last_delivery } };
+        }
+        if (task.delivery_attempt?.status === 'sending') {
+          return { status: 409, body: { error: 'prior Slack delivery outcome uncertain; reconcile before retrying' } };
         }
         if (task.status === 'done') {
           return { status: 409, body: { error: 'task is already complete without a bot delivery receipt' } };
@@ -235,7 +251,7 @@ function registerTaskRoutes(app, deps) {
           return { status: 409, body: { error: 'task is not due yet' } };
         }
         const text = String(req.body?.text || '').trim();
-        if (!text) return { status: 400, body: { error: 'text is required' } };
+        if (!text || text.length > 35000) return { status: 400, body: { error: 'text must contain 1 to 35000 characters' } };
         const destination = taskSlackDestination(task);
         if (!destination) {
           return { status: 409, body: { error: 'task has no fixed Slack destination or Slack origin' } };
@@ -243,21 +259,43 @@ function registerTaskRoutes(app, deps) {
         if (typeof deliverSlack !== 'function') {
           return { status: 503, body: { error: 'Nora bot delivery is unavailable' } };
         }
+        // Persist intent before Slack. A crash or lost response must never cause a blind resend.
+        task.delivery_attempt = { scope, status: 'sending', started_at: new Date().toISOString() };
+        await saveTasks(tasks, { strict: true });
         const receipt = await deliverSlack(destination.channel, text, destination.thread_ts);
+        // Reload after network I/O so edits to other tasks are not replaced by an old snapshot.
+        tasks = structuredClone(loadTasks());
+        const current = tasks.find(t => t.id === task.id);
+        if (!current) throw new Error('Task removed while Slack delivery was in progress');
         if (!receipt?.ok || !receipt.ts) {
+          if (receipt?.retry_safe === true) {
+            current.delivery_attempt.status = 'failed';
+            await saveTasks(tasks, { strict: true });
+          }
           return { status: 502, body: { error: `Slack bot delivery failed: ${receipt?.error || 'unverified provider response'}` } };
         }
         const delivery = {
+          scope,
           provider: 'slack_bot', channel: receipt.channel || destination.channel,
           thread_ts: destination.thread_ts, ts: receipt.ts, delivered_at: new Date().toISOString(),
         };
-        task.delivery = delivery;
-        const completion = finishTask(tasks, task, {
-          status: 'completed',
-          summary: String(req.body?.summary || text).slice(0, 4000),
+        current.delivery = delivery;
+        current.delivery_attempt = { ...current.delivery_attempt, status: 'delivered' };
+        current.result = cleanTaskResult({
+          status: 'completed', summary: String(req.body?.summary || text).slice(0, 4000),
           completed_by: 'Nora bot delivery',
         });
-        return { status: 200, body: { ok: true, task, delivery,
+        await saveTasks(tasks, { strict: true });
+        if (taskDeliveryScope(current) !== scope) {
+          return { status: 409, body: { error: 'task changed during delivery; receipt saved without completing the changed task', delivery } };
+        }
+        tasks = structuredClone(loadTasks());
+        const completedTask = tasks.find(t => t.id === task.id);
+        if (!completedTask || taskDeliveryScope(completedTask) !== scope) {
+          throw new Error('Task changed before completion; reconcile the saved Slack receipt');
+        }
+        const completion = await finishTask(tasks, completedTask, completedTask.result);
+        return { status: 200, body: { ok: true, task: completedTask, delivery,
           ...(completion.rolled_to ? { rolled_to: completion.rolled_to } : {}) } };
       });
       return res.status(outcome.status).json(outcome.body);
