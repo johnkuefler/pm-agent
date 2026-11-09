@@ -1896,6 +1896,7 @@ async function twApiSend(method, pathAndQuery, body, { signal, timeoutMs = 15000
 const twYmd = (s) => s ? String(s).replace(/[^0-9]/g, '').slice(0, 8) : undefined; // YYYY-MM-DD → YYYYMMDD
 const { createVerifiedTaskTool } = require('./src/integrations/teamwork-task-request');
 const { createProjectSearchTool } = require('./src/integrations/teamwork-project-search');
+const { createStageSweepTool } = require('./src/integrations/teamwork-stage-sweep');
 const { buildTaskIntake, taskDetailContinuation, taskRequestBindings } = require('./src/surfaces/slack/task-intake');
 // Teamwork v3 returns related objects as bare {id, type} refs and puts the real data in a
 // top-level `included` sideload (requested via ?include=…). slimTwTask resolves assignee and
@@ -1970,6 +1971,7 @@ async function teamworkTeamCapacity({ start_date, end_date, min_free_hours, user
 
 // Each tool: an Anthropic tool definition + an executor that returns a slimmed result.
 const TEAMWORK_TOOLS = [
+  createStageSweepTool({ get: twApiGet, send: twApiSend }),
   createProjectSearchTool({ get: twApiGet }),
   { definition: {
       name: 'teamwork_get_project',
@@ -2236,7 +2238,7 @@ const TEAMWORK_TOOLS = [
 ];
 // Teamwork WRITE tool names (create/update/complete/reopen/comment). READ tools are everything else.
 TEAMWORK_TOOLS.push(...createTeamworkPlanningTools({ send: twApiSend, get: twApiGet, ymd: twYmd }));
-const TW_WRITE_NAMES = new Set(['teamwork_create_task', 'teamwork_update_task', 'teamwork_complete_task',
+const TW_WRITE_NAMES = new Set(['teamwork_sweep_unstaged_tasks', 'teamwork_create_task', 'teamwork_update_task', 'teamwork_complete_task',
   'teamwork_reopen_task', 'teamwork_add_comment', ...TEAMWORK_PLANNING_WRITE_TOOL_NAMES]);
 const teammateApprovals = registerTeammateApprovalRuntime({ app, requireAuth, teamworkTools: TEAMWORK_TOOLS, db, dataDirectory: LOCAL_DATA_DIR, databaseReady: () => _dbReady, writeThrough: _writeThrough, resolveSlackIdentity: getSlackUserIdentity, sendProposal: postSlackMessageReceipt, postMessage: postSlackMessage });
 // ── Slack SEND tool — lets Nora send a Slack message RIGHT NOW to another channel or person when
@@ -4794,10 +4796,11 @@ function nativeTaskAttemptKey(taskId) {
   return `native-hourly-task-attempt:${String(taskId || '').slice(0, 200)}`;
 }
 
-function nativeTaskExecutionHistory(taskId, snapshot = operationStore.actionSnapshot()) {
+function nativeTaskExecutionHistory(taskId, snapshot = operationStore.actionSnapshot(), since = null) {
   const executions = (snapshot?.executions || []).filter(item =>
     item.surface === 'railway_hourly' && item.interaction_ref === String(taskId || '')
-    && ['write', 'mixed'].includes(item.access_mode));
+    && ['write', 'mixed'].includes(item.access_mode)
+    && (!since || ['selected', 'queued'].includes(item.status) || !Number.isFinite(Date.parse(item.selected || item.completed)) || new Date(item.selected || item.completed) > new Date(since)));
   return {
     available: true,
     succeeded_writes: executions.filter(item => item.status === 'succeeded'
@@ -4863,7 +4866,7 @@ function nativeHourlyMcpBindings() {
 }
 
 function nativeHourlyTaskToolset(task, successfulActions) {
-  const tools = [];
+  const tools = []; const scheduledFor = task.scheduled_for;
   const executors = {};
   const writeToolNames = new Set();
   const add = (definition, execute, { write = false } = {}) => {
@@ -4882,13 +4885,13 @@ function nativeHourlyTaskToolset(task, successfulActions) {
       write: TW_WRITE_NAMES.has(tool.definition.name),
     });
   }
-  if (nativeCalendarEnabled()) {
+  if (loadCalendarState()?.oauth_refresh_token) {
     const calendarTools = createGoogleCalendarTools({
       getAccessToken: getGoogleAccessToken,
       http: axios,
       interactionRef: `task:${task.id}`,
     });
-    for (const tool of calendarTools) add(tool.definition, tool.execute, {
+    for (const tool of calendarTools.filter(t => nativeCalendarEnabled() || t.definition.name === 'calendar_list_events')) add(tool.definition, tool.execute, {
       write: CALENDAR_WRITE_TOOL_NAMES.includes(tool.definition.name),
     });
   }
@@ -4903,9 +4906,7 @@ function nativeHourlyTaskToolset(task, successfulActions) {
         text: { type: 'string', description: 'the finished, truthful result to deliver' },
       }, required: ['text'] },
     }, async ({ text }) => {
-      const ok = await postSlackMessage(fixedDeliveryChannel, String(text || '').trim(), null);
-      return ok ? { ok: true, channel: fixedDeliveryChannel }
-        : { error: 'Slack did not confirm delivery to the task destination.' };
+      return localRuntimeApi('post', `/tasks/${encodeURIComponent(task.id)}/deliver`, { text: String(text || '').trim() }, 10000);
     }, { write: true });
   }
   add({
@@ -4947,6 +4948,7 @@ function nativeHourlyTaskToolset(task, successfulActions) {
       return { error: 'Completion refused: no successful external or delivery action is recorded in this run.' };
     }
     const current = loadTasks().find(item => item.id === task.id);
+    if (current?.last_run && current.scheduled_for !== scheduledFor) return { ok: true, already: true };
     if (!current || current.status !== 'pending') {
       return current?.status === 'done'
         ? { ok: true, already: true }
@@ -4977,7 +4979,7 @@ async function runNativeHourlyTask(task, {
   }
   let executionHistory;
   try {
-    executionHistory = nativeTaskExecutionHistory(task.id);
+    executionHistory = nativeTaskExecutionHistory(task.id, undefined, task.last_run);
   } catch (error) {
     return {
       status: 'deferred',
@@ -5000,7 +5002,7 @@ async function runNativeHourlyTask(task, {
   let taskBudgetMs;
   try {
     taskBudgetMs = hourlyFallbackBudget(
-      deadlineAt, 35000, 'Native hourly task execution', 10000);
+      deadlineAt, 55000, 'Native hourly task execution', 10000);
   } catch (error) {
     return { status: 'deferred', task_id: task.id, reason: error.code || 'insufficient_runtime_budget' };
   }
@@ -5021,6 +5023,7 @@ async function runNativeHourlyTask(task, {
     max_tokens: 6000,
     system: [
       'You are Nora executing exactly one explicitly queued operational task in an unattended Railway run.',
+      `Current date in America/Chicago: ${new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Chicago' }).format(new Date())}. Use this date for this week, not stale dates in task history.`,
       'Do the requested work now with the supplied tools. Do not perform unrelated cleanup, proactive reminders, experiments, or self-modification.',
       'This run may draft Gmail but may never send Gmail. Never send an external email. Slack, Teamwork, and calendar writes are allowed only when the queued task explicitly requests them.',
       'Use nora_reply_to_task_origin when the requester needs the result in the original Slack thread.',
@@ -5039,7 +5042,7 @@ async function runNativeHourlyTask(task, {
   };
   try {
     const { response, firedTools } = await runClaudeToolLoop(
-      reqBody, { headers }, toolset.executors, 4, {
+      reqBody, { headers }, toolset.executors, 8, {
         post,
         deadlineMs: taskBudgetMs,
         providerTimeoutMs: Math.min(15000, taskBudgetMs),
@@ -5055,7 +5058,7 @@ async function runNativeHourlyTask(task, {
           interaction_ref: task.id },
         signal: lease.signal,
       });
-    const completed = firedTools.includes('nora_complete_local_task');
+    const completed = firedTools.includes('nora_complete_local_task') || firedTools.includes('nora_deliver_task_result');
     const finalText = (response.data?.content || []).filter(block => block.type === 'text')
       .map(block => block.text).join(' ').trim();
     return {

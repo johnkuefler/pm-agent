@@ -105,22 +105,25 @@ function createGoogleCalendarTools({ getAccessToken, http, interactionRef = '', 
         name: 'calendar_list_events',
         description: 'Read events from Nora\'s connected Google Calendar. Use this to inspect her schedule before proposing or changing a meeting.',
         input_schema: { type: 'object', properties: {
+          calendar_id: { type: 'string', description: 'Optional accessible shared calendar ID. Omit for Nora primary calendar. Never guess IDs.' },
+          page_token: { type: 'string', description: 'Continue a bounded events lookup using next_page_token.' },
           time_min: { type: 'string', description: 'RFC3339 lower bound. Defaults to now.' },
           time_max: { type: 'string', description: 'RFC3339 upper bound. Defaults to 14 days after time_min.' },
           search: { type: 'string', description: 'Optional text search.' },
           max_results: { type: 'integer', minimum: 1, maximum: 50 },
         } },
       },
-      execute: async ({ time_min, time_max, search, max_results } = {}) => {
+      execute: async ({ time_min, time_max, search, max_results, calendar_id, page_token } = {}) => {
         const start = time_min ? dateTime(time_min, 'time_min') : new Date().toISOString();
         const end = time_max ? dateTime(time_max, 'time_max')
           : new Date(new Date(start).getTime() + 14 * 86400000).toISOString();
         if (new Date(end) <= new Date(start)) throw new Error('time_max must be after time_min');
-        const data = await request('get', `${GOOGLE_CALENDAR_API}/calendars/${calendar}/events`, {
+        const readCalendar = calendar_id || calendarId;
+        const data = await request('get', `${GOOGLE_CALENDAR_API}/calendars/${encodeURIComponent(readCalendar)}/events`, {
           params: { timeMin: start, timeMax: end, singleEvents: true, orderBy: 'startTime',
-            maxResults: Math.max(1, Math.min(50, Number(max_results) || 25)), ...(search ? { q: String(search) } : {}) },
+            maxResults: Math.max(1, Math.min(50, Number(max_results) || 25)), ...(search ? { q: String(search) } : {}), ...(page_token ? { pageToken: page_token } : {}) },
         });
-        return { calendar_id: calendarId, time_min: start, time_max: end,
+        return { calendar_id: readCalendar, time_min: start, time_max: end, next_page_token: data?.nextPageToken || null,
           events: (data?.items || []).map(compactEvent) };
       },
     },

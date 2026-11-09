@@ -22,6 +22,15 @@ function calendarTools(responder, calls = []) {
   };
 }
 
+test('shared calendar reads are encoded and preserve pagination without changing write target', async () => {
+  const {tools,calls}=calendarTools(async()=>({items:[],nextPageToken:'next'}));
+  const r=await byName(tools,'calendar_list_events').execute({calendar_id:'shared#holiday@example.com',
+    time_min:'2026-11-01T00:00:00Z',time_max:'2026-12-01T00:00:00Z',page_token:'prior'});
+  assert.match(calls[0].url,/shared%23holiday%40example.com\/events$/);
+  assert.equal(calls[0].params.pageToken,'prior');assert.equal(r.next_page_token,'next');
+  assert.equal(r.calendar_id,'shared#holiday@example.com');
+});
+
 test('Google Calendar exposes reads plus create and update, with no delete capability', () => {
   const { tools } = calendarTools(async () => ({}));
   assert.deepEqual(tools.map(tool => tool.definition.name), [

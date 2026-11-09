@@ -224,3 +224,14 @@ test('native task history separates verified outcomes from writes with unknown o
     status: 'selected', selected: '2026-07-23T04:01:00.000Z',
   }]);
 });
+
+test('recurring tasks never reuse receipts from a completed prior occurrence', () => {
+  const common={surface:'railway_hourly',interaction_ref:'recurring',access_mode:'write',status:'succeeded',tool_name:'nora_deliver_task_result',audit:{complete_chain_verified:true}};
+  const result=__test.nativeTaskExecutionHistory('recurring',{executions:[
+    {...common,id:'prior',selected:'2026-10-28T03:00:00Z',completed:'2026-10-28T03:10:00Z'},
+    {...common,id:'current',selected:'2026-11-09T19:00:00Z',completed:'2026-11-09T19:10:00Z'},
+    {...common,id:'uncertain-prior',status:'selected',selected:'2026-10-28T03:00:00Z'},
+  ]},'2026-10-28T03:15:00Z');
+  assert.deepEqual(result.succeeded_writes.map(r=>r.execution_id),['current']);
+  assert.deepEqual(result.uncertain_writes.map(r=>r.execution_id),['uncertain-prior']);
+});
