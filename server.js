@@ -78,6 +78,7 @@ const { isLightweightSocialSlackMessage, slackEmptyReplyFallback,
   stripSlackLookupNarration, slackReplyRequestsSilence,
   slackDeliverySegments, slackThreadHasNoraReply } = require('./src/surfaces/slack/conversation-policy');
 const { fitSlackSystemPrompt } = require('./src/surfaces/slack/prompt-fit');
+const { createAmbientBanter } = require('./src/surfaces/slack/ambient-banter');
 const { createSlackConversationAudit, slackAuditInteractionId, shouldAuditSlackInbound } =
   require('./src/surfaces/slack/conversation-audit');
 const { getSlackUserIdentity, getSlackUserName, cleanSlackText, fetchSlackThread, fetchSlackChannelHistory,
@@ -3462,6 +3463,9 @@ async function drainSlackWebhookEvents({ timeoutMs = 20000 } = {}) {
   }
 }
 
+const ambientBanter = createAmbientBanter({ loadMarkers, mutateMarkers, financialContent: containsFinancialContent,
+  enabled: () => process.env.NORA_PM_TEAM_BANTER_ENABLED !== 'false' && (!process.env.DATABASE_URL || _dbReady) });
+
 app.post('/webhook/slack', async (req, res) => {
   const slackVerification = verifySlackRequest(req);
   if (!slackVerification.valid) return res.sendStatus(401);
@@ -3601,6 +3605,9 @@ async function processSlackWebhookEvent(body, sourceAttestation = null) {
 
   // Decide whether to respond at the routing level (DM, mention, or active thread).
   if (!shouldRespond(event)) {
+    if (externalSourceAttestation.audit(sourceAttestation).complete_chain_verified) {
+      await ambientBanter.handle(event, noraBotUserId);
+    }
     await slackConversationAudit.mark(auditInteractionId, {
       handling_status: 'intentionally_skipped', metadata: { reason: 'routing_gate' },
     });
