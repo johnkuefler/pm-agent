@@ -1903,6 +1903,7 @@ const twYmd = (s) => s ? String(s).replace(/[^0-9]/g, '').slice(0, 8) : undefine
 const { createVerifiedTaskTool } = require('./src/integrations/teamwork-task-request');
 const { createProjectSearchTool } = require('./src/integrations/teamwork-project-search');
 const { createStageSweepTool } = require('./src/integrations/teamwork-stage-sweep');
+const { createSubtaskMoveTools, MOVE_TOOL: SUBTASK_MOVE_TOOL, NATIVE_CONNECTION: NATIVE_TEAMWORK_CONNECTION } = require('./src/integrations/teamwork-subtask-move');
 const { buildTaskIntake, taskDetailContinuation, taskRequestBindings } = require('./src/surfaces/slack/task-intake');
 // Teamwork v3 returns related objects as bare {id, type} refs and puts the real data in a
 // top-level `included` sideload (requested via ?include=…). slimTwTask resolves assignee and
@@ -2244,8 +2245,9 @@ const TEAMWORK_TOOLS = [
 ];
 // Teamwork WRITE tool names (create/update/complete/reopen/comment). READ tools are everything else.
 TEAMWORK_TOOLS.push(...createTeamworkPlanningTools({ send: twApiSend, get: twApiGet, ymd: twYmd }));
+TEAMWORK_TOOLS.push(...createSubtaskMoveTools({ get: twApiGet, send: twApiSend, mutateMarkers, baseUrl: () => process.env.TEAMWORK_BASE_URL }));
 const TW_WRITE_NAMES = new Set(['teamwork_sweep_unstaged_tasks', 'teamwork_create_task', 'teamwork_update_task', 'teamwork_complete_task',
-  'teamwork_reopen_task', 'teamwork_add_comment', ...TEAMWORK_PLANNING_WRITE_TOOL_NAMES]);
+  'teamwork_reopen_task', 'teamwork_add_comment', SUBTASK_MOVE_TOOL, ...TEAMWORK_PLANNING_WRITE_TOOL_NAMES]);
 const teammateApprovals = registerTeammateApprovalRuntime({ app, requireAuth, teamworkTools: TEAMWORK_TOOLS, db, dataDirectory: LOCAL_DATA_DIR, databaseReady: () => _dbReady, writeThrough: _writeThrough, resolveSlackIdentity: getSlackUserIdentity, sendProposal: postSlackMessageReceipt, postMessage: postSlackMessage });
 // ── Slack SEND tool — lets Nora send a Slack message RIGHT NOW to another channel or person when
 //    asked in a conversation, instead of queuing it for the hourly loop. Posts as the Nora bot (same
@@ -2455,9 +2457,10 @@ function safelyCompleteToolExecution(executionId, status, resultOrError) {
 }
 
 async function enqueueDeferredJob({ connectionId, toolName, args, origin, label }) {
+  if (connectionId === NATIVE_TEAMWORK_CONNECTION && !_dbReady) throw new Error('Task moves require the durable job queue; retry when storage is available.');
   const id = `job-${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`;
   const job = { id, kind: (origin && origin.kind) || 'slack', connection_id: connectionId, tool_name: toolName, label: label || toolName, args: args || {}, origin: origin || {} };
-  if (_dbReady) { try { await db.enqueueJob(job); } catch (e) { console.warn('enqueueJob failed, using bounded memory fallback:', e.message); enqueueMemoryJob(job); } }
+  if (_dbReady) { try { await db.enqueueJob(job); } catch (e) { if (connectionId === NATIVE_TEAMWORK_CONNECTION) throw e; console.warn('enqueueJob failed, using bounded memory fallback:', e.message); enqueueMemoryJob(job); } }
   else enqueueMemoryJob(job);
   console.log(`🧵 Deferred job ${id} queued: ${toolName} (origin ${job.kind})`);
   return { id };
@@ -2488,7 +2491,8 @@ async function deliverJobMessage(job, text) {
 async function deliverJobResult(job, { ok, result, error }) {
   const label = job.label || job.tool_name;
   const text = ok
-    ? renderJobResult(result, label)
+    ? (job.connection_id === NATIVE_TEAMWORK_CONNECTION && job.tool_name === SUBTASK_MOVE_TOOL
+      ? result.message : renderJobResult(result, label))
     : `couldn't finish ${label || 'that'}. ${String(error || 'it failed').slice(0, 200)}. want me to retry?`;
   return deliverJobMessage(job, text);
 }
@@ -2524,7 +2528,9 @@ async function processNextJob() {
     source: 'job-worker', meta: { step: job.tool_name || 'connector_tool', surface: job.kind || 'background' } });
   let result;
   try {
-    result = await mcpManager.callTool(job.connection_id, job.tool_name, job.args || {}, { timeout: DEFERRED_JOB_TIMEOUT_MS });
+    result = job.connection_id === NATIVE_TEAMWORK_CONNECTION && job.tool_name === SUBTASK_MOVE_TOOL
+      ? await TEAMWORK_TOOLS.find(t => t.definition.name === SUBTASK_MOVE_TOOL).execute(job.args || {}, { timeoutMs: DEFERRED_JOB_TIMEOUT_MS })
+      : await mcpManager.callTool(job.connection_id, job.tool_name, job.args || {}, { timeout: DEFERRED_JOB_TIMEOUT_MS });
   } catch (e) {
     const error = e.response?.data?.message || e.message || 'tool failed';
     if (_dbReady) {
@@ -2552,7 +2558,9 @@ async function processNextJob() {
       console.warn(`Deferred job ${job.id} completion is pending persistence: ${error.message}`);
     }
   } else { job.status = 'done'; pruneMemoryJobs(); }
-  safelyCompleteToolExecution(job.origin?.action_execution_id, 'succeeded', result);
+  safelyCompleteToolExecution(job.origin?.action_execution_id,
+    job.connection_id === NATIVE_TEAMWORK_CONNECTION && !result.verified ? 'failed' : 'succeeded',
+    job.connection_id === NATIVE_TEAMWORK_CONNECTION && !result.verified ? result.message : result);
   await deliverJobResult(job, { ok: true, result }).catch(error =>
     console.warn(`Deferred job ${job.id} result could not be delivered: ${error.message}`));
   runtimeActivity.finish(jobActivity.id, { status: 'completed',
@@ -3882,6 +3890,10 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, rootT
       for (const t of TEAMWORK_TOOLS) {
         if (TW_WRITE.has(t.definition.name) && !isDirect) continue;
         toolDefs.push(t.definition); toolExecutors[t.definition.name] = t.execute;
+        if (t.definition.name === SUBTASK_MOVE_TOOL) mcpBindings.meta[t.definition.name] = {
+          deferred: true, accessMode: 'write', connectionId: NATIVE_TEAMWORK_CONNECTION,
+          toolName: SUBTASK_MOVE_TOOL, connectionName: 'moving tasks under their parent',
+        };
       }
       const intake = buildTaskIntake({ channel, thread: isDM ? null : threadTs, user,
         identity: requesterIdentity, get: twApiGet, send: twApiSend, loadMarkers, mutateMarkers });
@@ -4031,7 +4043,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, rootT
         deferredMeta: mcpBindings.meta,
         writeToolNames: [...LIVE_WRITE, 'slack_send_message', 'nora_queue_recurring_task', 'nora_join_meeting'],
         toolCallLimits: { teamwork_find_projects: 2, teamwork_list_tasklists: 2,
-          teamwork_list_people: 2, teamwork_apply_project_plan: 1 },
+          teamwork_list_people: 2, teamwork_apply_project_plan: 1, [SUBTASK_MOVE_TOOL]: 1 },
         origin: { kind: 'slack', channel, thread_ts: threadTs || null, requester: user },
         deadlineMs: modelBudgetMs,
         providerTimeoutMs: Math.min(attachLiveTools
