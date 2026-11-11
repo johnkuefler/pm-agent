@@ -119,6 +119,13 @@ test('Slack direct-message delivery returns the durable channel and message rece
   assert.equal(calls[1].payload.channel, 'DMALLORY');
 });
 
+test('task links remain inside one table cell after Slack link normalization', () => {
+  const payload = formatSlackMessagePayload('| Task | Due |\n| --- | --- |\n| [Homepage](https://example.com/tasks/123) | Nov 12 |');
+  const table = payload.blocks.find(block => block.type === 'table');
+  assert.equal(table.rows[1].length, 2);
+  assert.equal(table.rows[1][0].text, 'Homepage (https://example.com/tasks/123)');
+});
+
 test('Slack table rendering happens only after the final financial egress guard', () => {
   const handler = sourceRegion('async function handleSlackImpl', 'async function getNoraBotUserId');
   const finalFinancialGuard = handler.lastIndexOf('if (!financialApproved && containsFinancialContent(reply))');

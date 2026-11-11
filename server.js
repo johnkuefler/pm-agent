@@ -1903,6 +1903,7 @@ const twYmd = (s) => s ? String(s).replace(/[^0-9]/g, '').slice(0, 8) : undefine
 const { createVerifiedTaskTool } = require('./src/integrations/teamwork-task-request');
 const { createProjectSearchTool } = require('./src/integrations/teamwork-project-search');
 const { createStageSweepTool } = require('./src/integrations/teamwork-stage-sweep');
+const { createTaggedTasksTool, taskTags } = require('./src/integrations/teamwork-tagged-tasks');
 const { createSubtaskMoveTools, MOVE_TOOL: SUBTASK_MOVE_TOOL, NATIVE_CONNECTION: NATIVE_TEAMWORK_CONNECTION } = require('./src/integrations/teamwork-subtask-move');
 const { buildTaskIntake, taskDetailContinuation, taskRequestBindings } = require('./src/surfaces/slack/task-intake');
 // Teamwork v3 returns related objects as bare {id, type} refs and puts the real data in a
@@ -1921,6 +1922,7 @@ function slimTwTask(t, inc = {}) {
   const projId = tl && ((tl.project && tl.project.id) || tl.projectId);
   return {
     id: t.id, name: t.name, status: t.status,
+    tags: taskTags(t, inc),
     assignees: assignees.length ? assignees : undefined,
     due: t.dueDate || undefined,
     start: t.startDate || undefined,
@@ -1978,6 +1980,7 @@ async function teamworkTeamCapacity({ start_date, end_date, min_free_hours, user
 
 // Each tool: an Anthropic tool definition + an executor that returns a slimmed result.
 const TEAMWORK_TOOLS = [
+  createTaggedTasksTool({ get: twApiGet }),
   createStageSweepTool({ get: twApiGet, send: twApiSend }),
   createProjectSearchTool({ get: twApiGet }),
   { definition: {
@@ -2024,7 +2027,7 @@ const TEAMWORK_TOOLS = [
       // `common` is the always-safe subset; if Teamwork ever rejects an optional param we fall back
       // to it and rely entirely on the client-side filter.
       const common = [`pageSize=${pageSize}`, `includeCompletedTasks=${include_completed ? 'true' : 'false'}`,
-        'include=users,tasklists,projects'];
+        'include=users,tasklists,projects,tags'];
       if (project_id) common.push(`projectIds=${encodeURIComponent(project_id)}`);
       let queryParts = common.slice();
       queryParts.push('orderBy=dueDate', 'orderMode=asc');
@@ -2074,7 +2077,7 @@ const TEAMWORK_TOOLS = [
       input_schema: { type: 'object', properties: { task_id: { type: 'string' } }, required: ['task_id'] }
     },
     execute: async ({ task_id }, request = {}) => {
-      const d = await twApiGet(`/projects/api/v3/tasks/${encodeURIComponent(task_id)}.json?include=users,tasklists,projects`, request);
+      const d = await twApiGet(`/projects/api/v3/tasks/${encodeURIComponent(task_id)}.json?include=users,tasklists,projects,tags`, request);
       const t = d?.task || {};
       return { ...slimTwTask(t, d?.included || {}), description: (t.description || '').slice(0, 1500) || undefined };
     } },

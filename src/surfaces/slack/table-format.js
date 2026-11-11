@@ -50,6 +50,9 @@ function normalizeSlackMrkdwn(value) {
 
 function splitMarkdownTableRow(line) {
   let source = String(line || '').trim();
+  // Normalizing Markdown links introduces Slack's <url|label> syntax. That pipe is part
+  // of the link, not a column separator, or linked task reports lose their native table.
+  source = source.replace(/<https?:\/\/[^>\n]+>/g, link => link.replace(/(?<!\\)\|/g, '\\|'));
   if (source.startsWith('|')) source = source.slice(1);
   if (source.endsWith('|') && !source.endsWith('\\|')) source = source.slice(0, -1);
 

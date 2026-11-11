@@ -10,6 +10,13 @@ the existing daily stage-0 sweep and biweekly agenda, without adding proactive w
 - Calendar event reads are available with the existing read-only connection. Event writes
   still require the scheduling grant. Shared-calendar IDs are explicit, and event pagination
   is exposed. Public holidays must not be described as confirmed company closures.
+- `teamwork_find_tagged_tasks` resolves exact live tag IDs and paginates tagged tasks across
+  projects. It checks start OR due date inside the inclusive window, verifies active project
+  status and returns the names, assignees and dates needed for the tentative report. Task detail
+  and ordinary task lists also retain tag IDs/names. This tool never modifies tasks or tags.
+  Missing access, unknown tags, missing membership and truncated searches fail explicitly;
+  they must not become zero-match reports or completed blocker posts. The recurring tentative
+  task uses the current Central Monday-Sunday window and leaves itself pending on lookup errors.
 - Fixed-destination delivery ends the model loop with a memory-only result handoff. The
   scheduler persists that result and calls the task delivery endpoint with its own 15-second
   request timeout, outside the model's deadline. No extra model turn is needed to confirm it.
